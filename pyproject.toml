@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hoshi"
+version = "0.1.0"
+description = "Minecraft server panel for a single operator: web UI, process supervision, small footprint"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = ["aiohttp>=3.10"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[project.scripts]
+hoshi = "hoshi.cli:main"
+
+[tool.setuptools]
+# src 布局：包放在 src/ 下，避免当前目录遮蔽已安装包
+package-dir = { "" = "src" }
+packages = ["hoshi", "hoshi.config", "hoshi.web"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
