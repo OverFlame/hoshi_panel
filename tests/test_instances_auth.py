@@ -137,3 +137,11 @@ def test_session_absolute_limit():
     session.created -= 3700
     session.last_seen -= 1
     assert store.get(session.token) is None
+
+def test_decode_line_handles_mixed_encodings():
+    from hoshi.instances.supervisor import decode_line
+
+    assert decode_line("香草".encode()) == "香草"
+    assert decode_line("新".encode("gb18030")) == "新"
+    assert decode_line("路径 D:\\\\MC\\\\香草".encode("gb18030")) == "路径 D:\\\\MC\\\\香草"
+    assert "\ufffd" in decode_line(b"\xff\xfe\x00bad")

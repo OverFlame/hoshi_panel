@@ -21,6 +21,21 @@ State = Literal["stopped", "starting", "running", "stopping", "crashed"]
 RING_SIZE = 2000
 
 
+def decode_line(raw: bytes, preferred: str = "utf-8") -> str:
+    """一行输出可能混着编码：Java 日志多为 UTF-8，Windows 原生路径可能是 GBK。
+
+    先按实例配置解，失败再试 UTF-8 与 GB18030，全都失败才替换。
+    """
+    for encoding in (preferred, "utf-8", "gb18030"):
+        if not encoding:
+            continue
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode(preferred or "utf-8", errors="replace")
+
+
 class InstanceProcess:
     def __init__(
         self,
@@ -201,13 +216,13 @@ class InstanceProcess:
             raw = await self._proc.stdout.readline()
             if not raw:
                 break
-            line = raw.decode(self.instance.encoding, errors="replace").rstrip("\r\n")
+            line = decode_line(raw, self.instance.encoding).rstrip("\r\n")
             self._append(line)
         # 读完剩余缓冲
         with contextlib.suppress(Exception):
             rest = await self._proc.stdout.read()
             if rest:
-                for line in rest.decode(self.instance.encoding, errors="replace").splitlines():
+                for line in decode_line(rest, self.instance.encoding).splitlines():
                     self._append(line)
 
     async def _watch_exit(self) -> None:
