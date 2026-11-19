@@ -66,6 +66,12 @@ class Config:
             )
         return out
 
+    def set(self, key: str, value: Any, source: Source = "file") -> None:
+        """运行时改一个值，带来源标记。"""
+        if key not in BY_KEY:
+            raise ConfigError([f"未知的配置项: {key}"])
+        self.entries[key] = Entry(value, source)
+
     def validate(self) -> list[str]:
         errors: list[str] = []
         for item in SCHEMA:
@@ -174,3 +180,4 @@ def default_path() -> Path:
 
 
 __all__ = ["Config", "ConfigError", "Entry", "default_path", "flatten", "load", "save"]
+

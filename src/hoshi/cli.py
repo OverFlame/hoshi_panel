@@ -1,6 +1,9 @@
-"""命令行入口：解析参数、加载配置、起服务。
+"""命令行入口。
 
-参数优先于配置文件。`--check-config` 只校验不启动，方便改完配置文件先验一遍。
+子命令：
+  serve                        启动面板（默认）
+  instances list|add|detect    实例管理
+  java scan                    探测本机 Java
 """
 
 from __future__ import annotations
@@ -12,9 +15,11 @@ from pathlib import Path
 from aiohttp import web
 
 from . import APP_NAME, VERSION
+from .auth.bootstrap import INITIAL_PASSWORD_FILE, ensure_admin
 from .config import Config, ConfigError, default_path, load, save
 from .db import get_meta, record
 from .db import init as init_db
+from .instances import Instance, InstanceError, InstanceRegistry, detect, scan
 from .web import create_app
 
 CLI_MAP = {
@@ -28,36 +33,51 @@ CLI_MAP = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hoshi", description=f"{APP_NAME} 服务端程序")
-    parser.add_argument("--config", type=Path, default=None, help="配置文件路径，默认 ./hoshi.toml")
-    parser.add_argument("--port", type=str, help="监听端口，覆盖配置文件")
-    parser.add_argument("--bind", type=str, help="监听地址，覆盖配置文件")
-    parser.add_argument("--data-dir", type=str, dest="data_dir", help="数据目录")
-    parser.add_argument("--servers-dir", type=str, dest="servers_dir", help="服务器存放目录")
-    parser.add_argument(
-        "--log-level", type=str, dest="log_level", help="debug / info / warning / error"
-    )
-    parser.add_argument("--check-config", action="store_true", help="只校验配置并退出")
-    parser.add_argument("--init-config", action="store_true", help="按默认值写出配置文件后退出")
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION}")
+    sub = parser.add_subparsers(dest="command")
+
+    serve = sub.add_parser("serve", help="启动面板（默认动作）")
+    serve.add_argument("--config", type=Path, default=None)
+    serve.add_argument("--port", type=str)
+    serve.add_argument("--bind", type=str)
+    serve.add_argument("--data-dir", type=str, dest="data_dir")
+    serve.add_argument("--servers-dir", type=str, dest="servers_dir")
+    serve.add_argument("--log-level", type=str, dest="log_level")
+    serve.add_argument("--check-config", action="store_true")
+    serve.add_argument("--init-config", action="store_true")
+
+    instances = sub.add_parser("instances", help="实例管理")
+    instances_sub = instances.add_subparsers(dest="instances_command", required=True)
+    instances_sub.add_parser("list")
+    detect_cmd = instances_sub.add_parser("detect", help="只识别目录，不写配置")
+    detect_cmd.add_argument("directory")
+    add = instances_sub.add_parser("add", help="注册一个已有目录")
+    add.add_argument("name")
+    add.add_argument("directory")
+    add.add_argument("--java", default="")
+    add.add_argument("--min-memory", type=int, default=2048)
+    add.add_argument("--max-memory", type=int, default=4096)
+    add.add_argument("--mode", choices=("auto", "jar", "args_file"), default="auto")
+    add.add_argument("--config", type=Path, default=None)
+    add.add_argument("--data-dir", type=str, dest="data_dir")
+
+    java = sub.add_parser("java", help="Java 探测")
+    java.add_argument("action", choices=("scan",))
+    java.add_argument("--path", action="append", default=[])
     return parser
 
 
-def collect_overrides(args: argparse.Namespace) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    for attr, key in CLI_MAP.items():
-        value = getattr(args, attr, None)
-        if value is not None:
-            overrides[key] = value
-    return overrides
-
-
 def load_config(args: argparse.Namespace) -> Config:
-    path = args.config or default_path()
-    return load(path if path.exists() else None, collect_overrides(args))
+    path = getattr(args, "config", None) or default_path()
+    overrides = {
+        key: getattr(args, attr)
+        for attr, key in CLI_MAP.items()
+        if getattr(args, attr, None) is not None
+    }
+    return load(path if path.exists() else None, overrides)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def cmd_serve(args: argparse.Namespace) -> int:
     try:
         config = load_config(args)
     except ConfigError as exc:
@@ -66,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.init_config:
-        target = save(config, args.config or default_path())
-        print(f"已写出配置: {target}")
+        print(f"已写出配置: {save(config, args.config or default_path())}")
         return 0
 
     errors = config.validate()
@@ -78,30 +97,111 @@ def main(argv: list[str] | None = None) -> int:
             print("配置校验通过")
         return 1 if errors else 0
 
-    if errors:
-        # 端口之类的问题属于硬错误，直接退出，不要带着错配置起服务
-        fatal = [e for e in errors if "web.port" in e or "路径" in e]
-        for error in errors:
-            print(f"配置警告: {error}", file=sys.stderr)
-        if fatal:
-            return 2
-
     data_dir = Path(str(config.get("app.data_dir")))
-    db_path = data_dir / "hoshi.db"
     data_dir.mkdir(parents=True, exist_ok=True)
-    conn = init_db(db_path)
+    conn = init_db(data_dir / "hoshi.db")
     record(conn, actor="system", action="start", result="ok", detail=f"v{VERSION}")
-    print(
-        f"{APP_NAME} {VERSION} · 数据目录 {data_dir} · 配置 {config.path} · "
-        f"库 {get_meta(conn, 'schema_version')}"
-    )
 
-    app = create_app(config)
+    password = ensure_admin(config, data_dir)
+    registry = InstanceRegistry(data_dir / "instances.json")
+
+    print(f"{APP_NAME} {VERSION} · 数据目录 {data_dir} · 配置 {config.path}")
+    print(f"实例 {len(registry.all())} 个 · 库 schema {get_meta(conn, 'schema_version')}")
+    if password:
+        print("=" * 56)
+        print(f"首次启动，已生成管理员密码: {password}")
+        print(f"同时写入 {data_dir / INITIAL_PASSWORD_FILE}")
+        print("=" * 56)
+
+    app = create_app(config, registry=registry)
     bind = str(config.get("web.bind"))
     port = int(config.get("web.port"))
     print(f"监听 http://{bind}:{port}")
     web.run_app(app, host=bind, port=port, print=None)
     return 0
+
+
+def _registry(args: argparse.Namespace) -> InstanceRegistry:
+    config = load_config(args)
+    return InstanceRegistry(Path(str(config.get("app.data_dir"))) / "instances.json")
+
+
+def cmd_instances(args: argparse.Namespace) -> int:
+    if args.instances_command == "detect":
+        result = detect(args.directory)
+        print(result.summary())
+        for warning in result.warnings:
+            print(f"  警告: {warning}")
+        return 0 if result.ok else 1
+
+    if args.instances_command == "list":
+        registry = _registry(argparse.Namespace(config=default_path(), data_dir=None))
+        for item in registry.all():
+            print(f"{item.id}  {item.name:<16} {item.launch_mode:<10} {item.directory}")
+        return 0
+
+    if args.instances_command == "add":
+        result = detect(args.directory)
+        print(result.summary())
+        if not result.ok and args.mode == "auto":
+            print("识别失败：请用 --mode jar|args_file 手动指定", file=sys.stderr)
+            return 1
+        mode = args.mode if args.mode != "auto" else result.launch_mode
+        java = args.java
+        if not java:
+            found = scan()
+            if not found:
+                print("没有探测到 Java，请用 --java 指定", file=sys.stderr)
+                return 1
+            java = found[0].path
+            print(f"使用 Java: {java} ({found[0].version})")
+        instance = Instance.new(
+            name=args.name,
+            directory=str(Path(args.directory).expanduser().resolve()),
+            launch_mode=mode,
+            jar=result.jar if mode == "jar" else "",
+            args_file=result.args_file if mode == "args_file" else "",
+            user_jvm_args=result.user_jvm_args,
+            java=java,
+            min_memory_mb=args.min_memory,
+            max_memory_mb=args.max_memory,
+        )
+        try:
+            _registry(args).add(instance)
+        except InstanceError as exc:
+            print(f"注册失败: {exc}", file=sys.stderr)
+            return 1
+        print(f"已注册: {instance.name} ({instance.id})")
+        print(f"启动参数: {' '.join(instance.argv())}")
+        return 0
+
+    return 2
+
+
+def cmd_java(args: argparse.Namespace) -> int:
+    found = scan(args.path)
+    if not found:
+        print("没有探测到 Java")
+        return 1
+    for info in found:
+        print(f"{info.version:<14} {info.path}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = list(argv if argv is not None else sys.argv[1:])
+    if not raw or raw[0].startswith("-"):
+        raw = ["serve", *raw]
+    parser = build_parser()
+    args = parser.parse_args(raw)
+    if args.command == "serve":
+        return cmd_serve(args)
+    if args.command == "instances":
+        return cmd_instances(args)
+    if args.command == "java":
+        return cmd_java(args)
+    parser.print_help()
+    return 2
 
 
 def run() -> None:  # pragma: no cover - 脚本入口

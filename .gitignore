@@ -27,3 +27,5 @@ tools/probes/*.log
 .vscode/
 .idea/
 .DS_Store
+.tmp-serve.log
+*.log

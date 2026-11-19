@@ -33,7 +33,7 @@ English: **Documents and code here are largely AI-generated.** Expect factual er
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | R0 | 配置 schema、TOML 读写、CLI、SQLite、健康检查 | 已完成 |
-| R1 | 实例模型、Java 探测、进程守护、WebSocket 控制台、登录 | 未开始 |
+| R1 | 实例模型、Java 探测、进程守护、WebSocket 控制台、登录 | 已完成 |
 | R2 | 设置页、公网三档、TOTP、限速、审计、命令白名单 | 未开始 |
 | R3 | 参数编辑、导入、下载、模组管理、目录迁移、bot 接口 | 未开始 |
 | R4 | 地图、玩家层、标记、分享链接 | 未开始 |
@@ -95,6 +95,7 @@ uv run ruff check .
 | `docs/28` | R0 实施记录与实测数据 |
 | `docs/29` | 包命名、布局、仓库创建与发布 |
 | `docs/30` | 远程 zip 传输、就地接管现有目录、语言复核 |
+| `docs/31` | R1 实施记录：实例、进程、控制台与香草样例 |
 
 ## 许可与分发
 
@@ -134,5 +135,7 @@ uv run python -m hoshi
 ## License
 
 GPL-3.0. Ship the source and `NOTICE.md` together with any binary you distribute. Map components are fetched at runtime, not bundled.
+
+
 
 
