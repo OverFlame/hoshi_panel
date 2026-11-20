@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 AUDIT_HTML = """<!doctype html>
-<html lang="zh-CN" data-theme="dark"><head><meta charset="utf-8">
+<html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/assets/pico.css">
 <title>审计 · {{app}}</title>
 <style>
  :root{color-scheme:dark}

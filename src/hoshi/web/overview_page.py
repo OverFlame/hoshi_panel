@@ -1,19 +1,21 @@
 """概览页：整体状态与实例卡片，进来先看全局。"""
 
 OVERVIEW_HTML = r"""<!doctype html>
-<html lang="zh-CN" data-theme="dark"><head><meta charset="utf-8">
+<html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/assets/pico.css">
 <title>{{app}}</title>
 <style>
  :root{color-scheme:dark}
  html,body{height:100%}
- body{margin:0;display:flex;flex-direction:column;min-height:100vh;
+ body{margin:0;display:flex;flex-direction:column;min-height:100vh;background:#0d1015;color:#e6e8eb;
       font:14px/1.6 "JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",system-ui,-apple-system,"Segoe UI",sans-serif}
- main{padding:10px 0 40px;width:100%;box-sizing:border-box}
- .wrap{max-width:1180px;margin:0 auto;padding:0 18px;width:100%;box-sizing:border-box}
+ header{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;border-bottom:1px solid #1e232c}
+ header h1{font-size:1rem;margin:0;font-weight:600;letter-spacing:.02em}
+ header a{color:#9db4d0;text-decoration:none;margin-left:14px;font-size:.9rem}
+ header a:hover{color:#8ab4ff}
+ main{padding:20px 22px 40px;max-width:1180px;margin:0 auto;width:100%;box-sizing:border-box}
  .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
- .card{background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:var(--pico-border-radius);padding:14px 16px;min-width:0}
+ .card{background:#131820;border:1px solid #1f2530;border-radius:10px;padding:14px 16px;min-width:0}
  .card .k{font-size:.78rem;color:#8a93a3}
  .card .v{font-size:1.5rem;font-weight:600;margin-top:2px}
  .card .s{font-size:.76rem;color:#7d8695;margin-top:2px}
@@ -21,14 +23,17 @@ OVERVIEW_HTML = r"""<!doctype html>
  .bar>i{display:block;height:100%;background:#2f6fed;width:0}
  .cols{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;margin-top:18px}
  h2{font-size:.82rem;color:#8a93a3;font-weight:600;margin:0 0 10px;letter-spacing:.04em;text-transform:uppercase}
- .inst{background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:var(--pico-border-radius);padding:14px 16px;margin-bottom:10px}
+ .inst{background:#131820;border:1px solid #1f2530;border-radius:10px;padding:14px 16px;margin-bottom:10px}
  .inst .top{display:flex;justify-content:space-between;align-items:center;gap:10px}
  .inst .name{font-weight:600}
  .state{font-size:.72rem;padding:2px 8px;border-radius:99px;background:#242a35;color:#b9c2d0}
  .state.running{background:#123a28;color:#8ff0c0}
  .state.crashed{background:#3d1616;color:#ffb4b4}
  .meta{display:flex;gap:14px;flex-wrap:wrap;color:#7d8695;font-size:.78rem;margin-top:6px}
- .events{background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:var(--pico-border-radius);padding:12px 14px;max-height:420px;overflow:auto}
+ button{padding:5px 11px;border-radius:7px;border:1px solid #2a3140;background:#18202b;color:#dfe5ee;cursor:pointer;font-size:.82rem}
+ button:hover{border-color:#2f6fed}
+ button.primary{background:#2f6fed;border-color:#2f6fed}
+ .events{background:#131820;border:1px solid #1f2530;border-radius:10px;padding:12px 14px;max-height:420px;overflow:auto}
  .ev{font-size:.8rem;color:#a9b3c2;padding:5px 0;border-bottom:1px solid #1a2029}
  .ev b{color:#dfe5ee;font-weight:500}
  .muted{color:#7d8695}
@@ -36,16 +41,12 @@ OVERVIEW_HTML = r"""<!doctype html>
  @media (max-width:900px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} .cols{grid-template-columns:1fr} }
 </style></head>
 <body>
-<header class="container">
-  <nav>
-    <ul><li><strong>{{app}}</strong></li></ul>
-    <ul><li><a href="/settings">设置</a></li><li><a href="/audit">审计</a></li>
-      <li><span class="muted">{{user}}</span></li>
-      <li><button id="logout" class="secondary outline">退出</button></li></ul>
-  </nav>
+<header>
+  <h1>{{app}}</h1>
+  <div><a href="/settings">设置</a><a href="/audit">审计</a><span class="muted"> {{user}}</span>
+    <button id="logout" style="margin-left:12px">退出</button></div>
 </header>
 <main>
-  <div class="wrap">
   <div class="cards">
     <div class="card"><div class="k">服务器</div><div class="v" id="m-inst">-</div><div class="s" id="m-inst-s">运行 0</div></div>
     <div class="card"><div class="k">在线玩家</div><div class="v" id="m-players">-</div><div class="s">所有服务器合计</div></div>
@@ -63,7 +64,6 @@ OVERVIEW_HTML = r"""<!doctype html>
       <h2>最近事件</h2>
       <div class="events" id="events"><div class="empty">读取中…</div></div>
     </div>
-  </div>
   </div>
 </main>
 <script>
