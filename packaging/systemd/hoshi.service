@@ -1,0 +1,30 @@
+[Unit]
+Description=HoshiLauncher Minecraft server panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hoshi
+Group=hoshi
+WorkingDirectory=/opt/hoshi
+ExecStart=/opt/hoshi/hoshi serve --config /etc/hoshi/hoshi.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+
+# 只允许写数据目录与实例目录
+ReadWritePaths=/opt/hoshi/data /srv/minecraft
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

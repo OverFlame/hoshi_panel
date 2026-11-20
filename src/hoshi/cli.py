@@ -72,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
     codes = sub.add_parser("recovery-codes", help="重新生成一次性恢复码")
     codes.add_argument("--config", type=Path, default=None)
 
+    migrate = sub.add_parser("migrate-mcsl2", help="从旧版 MCSL2 目录迁移实例")
+    migrate.add_argument("root", help="旧 MCSL2 根目录，含 Servers/")
+    migrate.add_argument("--dry-run", action="store_true", help="只列出结果，不写入")
+    migrate.add_argument("--java", default="", help="旧配置没记 java 时用的路径")
+    migrate.add_argument("--config", type=Path, default=None)
+    migrate.add_argument("--data-dir", type=str, dest="data_dir")
+
     reset = sub.add_parser("reset-password", help="生成新的管理员密码")
     reset.add_argument("--config", type=Path, default=None)
     reset.add_argument("--data-dir", type=str, dest="data_dir")
@@ -278,6 +285,29 @@ def cmd_recovery_codes(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate_mcsl2(args: argparse.Namespace) -> int:
+    from .migrate_mcsl2 import migrate as run_migration
+
+    config = load_config(args)
+    data_dir = Path(str(config.get("app.data_dir")))
+    registry = InstanceRegistry(data_dir / "instances.json")
+    report = run_migration(Path(args.root), registry, args.java, dry_run=args.dry_run)
+
+    if not report:
+        print("没有找到可迁移的实例（缺少 Servers/*/MCSL2ServerConfig.json）")
+        return 1
+    for item in report:
+        status = "跳过" if item.get("skipped") else ("成功" if item.get("ok") else "失败")
+        print(f"[{status}] {item['name']}  {item['directory']}")
+        if item.get("reason"):
+            print(f"         {item['reason']}")
+        for problem in item.get("problems") or []:
+            print(f"         注意: {problem}")
+    if args.dry_run:
+        print("\n这是 dry-run，没有写入注册表")
+    return 0
+
+
 def cmd_reset_password(args: argparse.Namespace) -> int:
     from .auth import generate_password, hash_password
 
@@ -311,6 +341,9 @@ def main(argv: list[str] | None = None) -> int:
     if raw and raw[0] in ("-h", "--help"):
         build_parser().print_help()
         return 0
+    if raw and raw[0] in ("-V", "--version"):
+        print(f"{APP_NAME} {VERSION}")
+        return 0
     if not raw or raw[0].startswith("-"):
         raw = ["serve", *raw]
     parser = build_parser()
@@ -321,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_instances(args)
     if args.command == "java":
         return cmd_java(args)
+    if args.command == "migrate-mcsl2":
+        return cmd_migrate_mcsl2(args)
     if args.command == "totp":
         return cmd_totp(args)
     if args.command == "recovery-codes":
