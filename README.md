@@ -79,6 +79,13 @@ English: **Documents and code here are largely AI-generated.** Expect factual er
 - 对外暴露分三档，公网档必须开启两步验证并手写确认短语。
 - 防 CSRF、防跨站 WebSocket、限制 JVM 参数与命令。
 
+### 界面与反馈
+
+- 导入、导出、备份这类耗时操作都有进度条，导出与备份可以中途取消。
+- 操作结果用右下角提示条，不再弹窗打断。
+- 深色与浅色主题切换；想改细节写 `data/theme.css`，不用改代码。
+- 整个界面用 JetBrains Mono，字体已内嵌。
+
 ### 群里查状态
 
 给 QQ 机器人一个只读令牌，就能查在线人数、玩家名单、最近事件。每群每分钟限 10 次，每人 1 次。
@@ -130,11 +137,19 @@ uv run python -m hoshi
 | 定时重启、定时备份 | 还没有 |
 | 给别人分配不同权限 | 单人使用，只有一个管理员 |
 
-## 主题
+## 主题与自定义
 
-界面默认 Tabler 深色主题，可在设置里切深色或浅色。想改细节，把覆盖样式写到 `data/theme.css` 即可，页面会自动加载。`GET /api/theme` 会列出可用变量。
+界面默认 Tabler 深色主题，可在设置里切换深色或浅色。
 
-Tabler 本体是 MIT 许可。官网卖的「Premium」是额外的模板、插画、邮件模板等素材，与开源主题库无关，不需要购买。
+想改细节，把覆盖样式写到 `data/theme.css`，页面会自动加载，不用重启：
+
+```css
+:root{ --hoshi-accent:#ff8800; --tblr-body-font-size:.9rem; }
+```
+
+`GET /api/theme` 会返回当前主题、自定义 CSS 地址与可用变量名。
+
+Tabler 本体是 MIT 许可，官网卖的「Premium」是额外的模板、插画、邮件模板等素材，与开源主题库无关，不需要购买。
 
 ## 字体
 

@@ -50,7 +50,7 @@ conduct secondary development based on MCSL2.
 | psutil | 进程与主机指标（内存、CPU） | BSD-3-Clause | https://github.com/giampaolo/psutil |
 | JetBrains Mono | 界面等宽字体 | SIL OFL 1.1 | https://github.com/JetBrains/JetBrainsMono |
 | Nerd Fonts | 字体图标补丁（产出 JetBrainsMono Nerd Font） | 字体 OFL 1.1，补丁脚本 MIT | https://github.com/ryanoasis/nerd-fonts |
-| Tabler | 界面主题（预览中） | MIT | https://github.com/tabler/tabler |
+| Tabler | 界面主题（v1.0.0-beta20，内嵌 CSS） | MIT | https://github.com/tabler/tabler |
 
 BlueMap 与 CreateTrainWebAPI 不随本仓库分发，由程序在导入实例时按版本矩阵拉取；若你把缓存目录一并分发，需同时附带它们的许可文件。
 
@@ -66,6 +66,10 @@ BlueMap 与 CreateTrainWebAPI 不随本仓库分发，由程序在导入实例�
 | 限制 | 不得单独售卖字体；OFL 与 GPL-3.0 并存，互不影响 |
 
 只做字形子集化不算修改字形，因此可以保留原字体名。如果有人想二次分发改过的字形，必须换名字。
+
+## 关于 Tabler 的付费部分
+
+Tabler 本体（`tabler.min.css`）是 MIT 许可，可以随本程序分发。官网商店卖的 Premium 是模板、插画、邮件模板等素材，与本项目无关，也没有被使用。
 
 ## 不包含的内容
 
