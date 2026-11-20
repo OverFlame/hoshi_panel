@@ -303,3 +303,72 @@ async def test_ws_origin_rejected(tmp_path):
             "/ws/console/x", headers={"Origin": "http://evil.example"}, allow_redirects=False
         )
         assert resp.status == 403
+
+
+async def test_totp_qr_returns_svg(tmp_path):
+    app, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        setup = await client.post("/api/auth/totp/setup", headers={"X-CSRF-Token": csrf})
+        assert setup.status == 200
+        qr = await client.get("/api/auth/totp/qr")
+        assert qr.status == 200
+        assert qr.content_type == "image/svg+xml"
+        body = await qr.text()
+        assert "<svg" in body
+
+
+async def test_recovery_rotate(tmp_path):
+    app, config = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        bad = await client.post(
+            "/api/auth/recovery/rotate", json={"password": "nope"}, headers={"X-CSRF-Token": csrf}
+        )
+        assert bad.status == 400
+        ok = await client.post(
+            "/api/auth/recovery/rotate",
+            json={"password": PASSWORD},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert ok.status == 200
+        codes = (await ok.json())["recovery_codes"]
+        assert len(codes) == 10
+        assert len(config.get("auth.recovery_hashes")) == 10
+
+
+def test_cli_totp_matches_hotp(tmp_path, capsys):
+    from hoshi.cli import main
+    from hoshi.config import save
+
+    config = load(None, {"app.data_dir": str(tmp_path / "data")})
+    secret = generate_secret()
+    config.set("auth.totp_secret", secret)
+    path = tmp_path / "hoshi.toml"
+    config.path = path
+    save(config, path)
+
+    assert main(["totp", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "当前动态码" in out
+    assert hotp(secret, current_step()) in out
+
+    assert main(["totp", "--config", str(path), "--uri"]) == 0
+    assert "otpauth://totp/" in capsys.readouterr().out
+
+
+def test_cli_totp_setup_without_app(tmp_path, capsys):
+    from hoshi.cli import main
+    from hoshi.config import load as load_config
+
+    path = tmp_path / "hoshi.toml"
+    assert main(["totp", "--setup", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "密钥:" in out and "恢复码" in out and "当前动态码" in out
+
+    config = load_config(path, {})
+    assert config.get("auth.totp_enabled") is True
+    assert len(config.get("auth.recovery_hashes")) == 10
+
+    assert main(["totp", "--config", str(path)]) == 0
+    assert "当前动态码" in capsys.readouterr().out

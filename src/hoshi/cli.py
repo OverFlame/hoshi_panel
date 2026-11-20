@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--config", type=Path, default=None)
     add.add_argument("--data-dir", type=str, dest="data_dir")
 
+    totp = sub.add_parser("totp", help="在服务器上直接出动态码（没有验证器 App 时用）")
+    totp.add_argument("--config", type=Path, default=None)
+    totp.add_argument("--uri", action="store_true", help="打印 otpauth 地址")
+    totp.add_argument("--setup", action="store_true", help="在终端里生成密钥并启用，不依赖手机 App")
+    totp.add_argument("--disable", action="store_true", help="关闭两步验证")
+
+    codes = sub.add_parser("recovery-codes", help="重新生成一次性恢复码")
+    codes.add_argument("--config", type=Path, default=None)
+
     reset = sub.add_parser("reset-password", help="生成新的管理员密码")
     reset.add_argument("--config", type=Path, default=None)
     reset.add_argument("--data-dir", type=str, dest="data_dir")
@@ -85,6 +94,8 @@ def load_config(args: argparse.Namespace) -> Config:
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         config = load_config(args)
+        # 配置文件可能还不存在；先占好路径，保存时才写得出去
+        config.path = args.config or default_path()
     except ConfigError as exc:
         for error in exc.errors:
             print(f"配置错误: {error}", file=sys.stderr)
@@ -200,6 +211,69 @@ def cmd_instances(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_totp(args: argparse.Namespace) -> int:
+    import time
+
+    from .auth import provisioning_uri
+    from .auth.totp import STEP, hotp
+
+    config = load_config(args)
+    target = args.config or default_path()
+    config.path = target
+
+    if args.disable:
+        config.set("auth.totp_enabled", False, "cli")
+        config.set("auth.totp_secret", "", "cli")
+        config.set("auth.recovery_hashes", [], "cli")
+        save(config, target)
+        print("已关闭两步验证")
+        return 0
+
+    if args.setup:
+        from .auth import generate_recovery_codes, hash_recovery_codes
+        from .auth.totp import STEP, generate_secret, hotp
+
+        secret = generate_secret()
+        codes = generate_recovery_codes()
+        config.set("auth.totp_secret", secret, "cli")
+        config.set("auth.totp_enabled", True, "cli")
+        config.set("auth.recovery_hashes", hash_recovery_codes(codes), "cli")
+        save(config, target)
+        print(f"密钥: {secret}")
+        print(f"地址: {provisioning_uri(secret, str(config.get('auth.username')), APP_NAME)}")
+        print("恢复码（只显示这一次）：")
+        for code in codes:
+            print(f"  {code}")
+        print(f"当前动态码: {hotp(secret, int(time.time() // STEP))}")
+        print(f"已保存到 {target}；以后用 hoshi totp 出码")
+        return 0
+
+    secret = str(config.get("auth.totp_secret") or "")
+    if not secret:
+        print("还没有配置两步验证密钥。没有 App 就在终端运行 hoshi totp --setup", file=sys.stderr)
+        return 1
+    if args.uri:
+        print(provisioning_uri(secret, str(config.get("auth.username")), APP_NAME))
+        return 0
+    remaining = STEP - int(time.time()) % STEP
+    print(f"当前动态码: {hotp(secret, int(time.time() // STEP))}（{remaining} 秒后刷新）")
+    return 0
+
+
+def cmd_recovery_codes(args: argparse.Namespace) -> int:
+    from .auth import generate_recovery_codes, hash_recovery_codes
+
+    config = load_config(args)
+    codes = generate_recovery_codes()
+    config.set("auth.recovery_hashes", hash_recovery_codes(codes), "cli")
+    target = args.config or default_path()
+    save(config, target)
+    print("新的恢复码（旧的一次性码已失效）：")
+    for code in codes:
+        print(f"  {code}")
+    return 0
+
+
 def cmd_reset_password(args: argparse.Namespace) -> int:
     from .auth import generate_password, hash_password
 
@@ -230,6 +304,9 @@ def cmd_java(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(argv if argv is not None else sys.argv[1:])
+    if raw and raw[0] in ("-h", "--help"):
+        build_parser().print_help()
+        return 0
     if not raw or raw[0].startswith("-"):
         raw = ["serve", *raw]
     parser = build_parser()
@@ -240,6 +317,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_instances(args)
     if args.command == "java":
         return cmd_java(args)
+    if args.command == "totp":
+        return cmd_totp(args)
+    if args.command == "recovery-codes":
+        return cmd_recovery_codes(args)
     if args.command == "reset-password":
         return cmd_reset_password(args)
     parser.print_help()

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import segno
 from aiohttp import WSMsgType, web
 
 from .. import APP_NAME, UPSTREAM, VERSION
@@ -199,6 +200,23 @@ SETTINGS_HTML = """<!doctype html>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a></div></header>
 <main>
+<h2>两步验证</h2>
+<div class="item">
+  <div class="top"><div><b>登录动态码</b> <span class="key">auth.totp_enabled</span></div><div id="totp-state" class="tag">读取中</div></div>
+  <div class="why">没有验证器 App 也能用：保存生成的一次性恢复码，或在服务器上运行 hoshi totp 出码。</div>
+  <div class="row">
+    <button id="totp-setup">生成密钥并显示二维码</button>
+    <button id="totp-rotate">重新生成恢复码</button>
+    <button id="totp-disable">关闭两步验证</button>
+  </div>
+  <div id="totp-enroll" style="display:none;margin-top:12px">
+    <div class="row"><img id="totp-qr" width="200" height="200" alt="二维码"></div>
+    <div class="why">扫不出就用密钥手动输入（验证器里选「输入设置密钥」）：<code id="totp-secret"></code></div>
+    <div class="row"><input id="totp-code" inputmode="numeric" placeholder="输入 App 上的 6 位数字">
+    <button class="primary" id="totp-enable">启用</button></div>
+  </div>
+  <div id="totp-codes" class="why" style="display:none"></div>
+</div>
 <p class="muted">改动立即写入配置文件；标「重启生效」的需要重启面板。来源列显示这个值现在来自哪里。</p>
 <div id="items"></div>
 <div class="row"><button class="primary" id="save">保存改动</button><span class="muted">危险项保存后可能要求重启</span></div>
@@ -243,6 +261,46 @@ document.getElementById('save').onclick=async()=>{
   msg.textContent=r.ok?('已保存'+(data.restart_required.length?'，需重启：'+data.restart_required.join('、'):'')):('失败：'+(data.errors||[]).join('；'));
   if(r.ok) await load();
 };
+async function authStatus(){
+  const r=await fetch('/api/auth/status'); if(!r.ok) return;
+  const d=await r.json();
+  document.getElementById('totp-state').textContent=d.totp_enabled?('已开启 · 恢复码 '+d.recovery_left):'未开启';
+}
+function showCodes(codes){
+  const el=document.getElementById('totp-codes'); el.style.display='block';
+  el.innerHTML='恢复码只显示这一次，存好：<br><code>'+codes.join('  ')+'</code>';
+}
+document.getElementById('totp-setup').onclick=async()=>{
+  const r=await fetch('/api/auth/totp/setup',{method:'POST',headers:{'X-CSRF-Token':csrf}});
+  const d=await r.json();
+  if(!d.ok){alert(d.error||'生成失败');return}
+  document.getElementById('totp-secret').textContent=d.secret;
+  document.getElementById('totp-qr').src='/api/auth/totp/qr?t='+Date.now();
+  document.getElementById('totp-enroll').style.display='block';
+};
+document.getElementById('totp-enable').onclick=async()=>{
+  const code=document.getElementById('totp-code').value.trim();
+  const r=await fetch('/api/auth/totp/enable',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({code})});
+  const d=await r.json();
+  if(!d.ok){alert(d.error||'启用失败');return}
+  document.getElementById('totp-enroll').style.display='none';
+  showCodes(d.recovery_codes); authStatus();
+};
+document.getElementById('totp-rotate').onclick=async()=>{
+  const password=prompt('输入当前密码，用于重新生成恢复码'); if(!password)return;
+  const r=await fetch('/api/auth/recovery/rotate',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({password})});
+  const d=await r.json();
+  if(!d.ok){alert(d.error||'失败');return}
+  showCodes(d.recovery_codes); authStatus();
+};
+document.getElementById('totp-disable').onclick=async()=>{
+  const password=prompt('输入当前密码，关闭两步验证'); if(!password)return;
+  const r=await fetch('/api/auth/totp/disable',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({password})});
+  const d=await r.json();
+  if(!d.ok){alert(d.error||'失败');return}
+  authStatus();
+};
+authStatus();
 load();
 </script>
 </body></html>
@@ -468,7 +526,9 @@ def create_app(
     async def totp_setup(request: web.Request) -> web.Response:
         session = request[SESSION_KEY]
         secret = generate_secret()
-        current_app[PENDING_KEY] = {"secret": secret, "actor": session.username}
+        pending = current_app[PENDING_KEY]
+        pending.clear()
+        pending.update({"secret": secret, "actor": session.username})
         return web.json_response(
             {
                 "ok": True,
@@ -476,6 +536,27 @@ def create_app(
                 "uri": provisioning_uri(secret, str(config.get("auth.username")), APP_NAME),
             }
         )
+
+    async def totp_qr(request: web.Request) -> web.Response:
+        """返回 otpauth 地址的二维码；有待绑定密钥时优先用它。"""
+        secret = str(current_app[PENDING_KEY].get("secret") or config.get("auth.totp_secret") or "")
+        if not secret:
+            return web.json_response({"ok": False, "error": "还没有密钥，先调用 setup"}, status=400)
+        uri = provisioning_uri(secret, str(config.get("auth.username")), APP_NAME)
+        svg = segno.make(uri, error="m").svg_inline(scale=4, border=2)
+        return web.Response(text=svg, content_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+    async def recovery_rotate(request: web.Request) -> web.Response:
+        """重新生成恢复码；旧的一次性码立即失效。"""
+        session = request[SESSION_KEY]
+        payload = await _read_payload(request)
+        if not verify_password(str(payload.get("password", "")), str(config.get("auth.password_hash"))):
+            return web.json_response({"ok": False, "error": "密码不正确"}, status=400)
+        codes = generate_recovery_codes()
+        config.set("auth.recovery_hashes", hash_recovery_codes(codes), "file")
+        persist()
+        audit(session.username, "recovery", result="rotated")
+        return web.json_response({"ok": True, "recovery_codes": codes})
 
     async def totp_enable(request: web.Request) -> web.Response:
         session = request[SESSION_KEY]
@@ -493,7 +574,7 @@ def create_app(
         config.set("auth.totp_last_step", step, "file")
         config.set("auth.recovery_hashes", hash_recovery_codes(codes), "file")
         persist()
-        current_app[PENDING_KEY] = {}
+        current_app[PENDING_KEY].clear()
         audit(session.username, "totp", result="enabled")
         return web.json_response({"ok": True, "recovery_codes": codes})
 
@@ -691,6 +772,8 @@ def create_app(
     app.router.add_get("/api/settings/history", settings_history)
     app.router.add_get("/api/auth/status", auth_status)
     app.router.add_post("/api/auth/totp/setup", totp_setup)
+    app.router.add_get("/api/auth/totp/qr", totp_qr)
+    app.router.add_post("/api/auth/recovery/rotate", recovery_rotate)
     app.router.add_post("/api/auth/totp/enable", totp_enable)
     app.router.add_post("/api/auth/totp/disable", totp_disable)
     app.router.add_get("/api/instances", list_instances)
