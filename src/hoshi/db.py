@@ -33,6 +33,16 @@ DDL = (
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit (ts)
     """,
     """
+    CREATE TABLE IF NOT EXISTS bot_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        group_id TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        created TEXT NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS settings_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
@@ -79,6 +89,45 @@ def init(path: Path) -> sqlite3.Connection:
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return None if row is None else str(row["value"])
+
+
+def create_bot_token(conn: sqlite3.Connection, group_id: str, label: str = "") -> tuple[int, str]:
+    """返回 (id, 明文令牌)。只存散列。"""
+    import hashlib
+    import secrets
+
+    token = "hoshi_" + secrets.token_urlsafe(24)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    cursor = conn.execute(
+        "INSERT INTO bot_tokens (token_hash, group_id, label, created) VALUES (?, ?, ?, ?)",
+        (digest, group_id, label, now()),
+    )
+    conn.commit()
+    return int(cursor.lastrowid or 0), token
+
+
+def find_bot_token(conn: sqlite3.Connection, token: str) -> dict[str, object] | None:
+    import hashlib
+
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    row = conn.execute(
+        "SELECT id, group_id, label, created FROM bot_tokens WHERE token_hash = ? AND revoked = 0",
+        (digest,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_bot_tokens(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    rows = conn.execute(
+        "SELECT id, group_id, label, created FROM bot_tokens WHERE revoked = 0 ORDER BY id DESC"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def revoke_bot_token(conn: sqlite3.Connection, token_id: int) -> bool:
+    cursor = conn.execute("UPDATE bot_tokens SET revoked = 1 WHERE id = ? AND revoked = 0", (token_id,))
+    conn.commit()
+    return bool(cursor.rowcount)
 
 
 def log_setting(

@@ -62,6 +62,7 @@ INDEX_HTML = """<!doctype html>
   <div class="tabs">
     <button class="tab active" data-pane="console">控制台</button>
     <button class="tab" data-pane="files">文件</button>
+    <button class="tab" data-pane="mods">模组</button>
     <button class="tab" data-pane="backups">备份</button>
     <button class="tab" id="export">导出 zip</button>
   </div>
@@ -73,6 +74,12 @@ INDEX_HTML = """<!doctype html>
   <div class="pane" id="pane-files">
     <div class="toolbar"><button id="up">上一级</button><span class="muted" id="cwd">/</span></div>
     <div id="filelist"></div>
+  </div>
+  <div class="pane" id="pane-mods">
+    <div class="toolbar"><button id="mods-refresh">刷新</button>
+      <label class="muted"><input type="checkbox" id="mods-lookup" checked> 在线查侧别</label>
+      <span class="muted" id="mods-summary"></span></div>
+    <div id="modlist"></div>
   </div>
   <div class="pane" id="pane-backups">
     <div class="toolbar"><button id="backup-new">创建备份</button><span class="muted" id="retention"></span></div>
@@ -131,7 +138,7 @@ async function select(id){
   };
   ws.onopen=()=>{$('text').disabled=false;$('send').disabled=false};
   ws.onclose=()=>{$('text').disabled=true;$('send').disabled=true};
-  loadFiles(''); loadBackups();
+  loadFiles(''); loadBackups(); loadMods();
 }
 async function send(){
   const text=$('text').value.trim(); if(!text||!state.ws)return;
@@ -212,6 +219,32 @@ async function loadBackups(){
     box.appendChild(div);
   }
 }
+async function loadMods(){
+  if(!state.current)return;
+  $('mods-summary').textContent='加载中…';
+  const lookup=$('mods-lookup').checked?'1':'0';
+  const r=await fetch(`/api/instances/${state.current}/mods?lookup=${lookup}`);
+  const d=await r.json();
+  $('mods-summary').textContent=`共 ${d.summary.total} · 启用 ${d.summary.enabled} · 客户端专用 ${d.summary.client_only} · 未知 ${d.summary.unknown}`;
+  const box=$('modlist'); box.innerHTML='';
+  if(!d.mods.length){box.innerHTML='<p class="muted">mods 目录为空</p>';return}
+  for(const m of d.mods){
+    const div=document.createElement('div'); div.className='fitem';
+    const tag=m.side==='client'?'<span class="state crashed">客户端</span>':m.side==='server'?'<span class="state">服务端</span>':m.side==='both'?'<span class="state running">通用</span>':'<span class="state">未知</span>';
+    div.innerHTML=`<span class="fname">${m.file}</span>
+      <span class="muted">${tag} ${m.advice||''} · ${fmtSize(m.size)}</span>
+      <button>${m.enabled?'停用':'启用'}</button>`;
+    div.querySelector('button').onclick=async()=>{
+      const r2=await fetch(`/api/instances/${state.current}/mods/toggle`,{method:'POST',headers:{...H,'Content-Type':'application/json'},
+        body:JSON.stringify({file:m.file,enabled:!m.enabled})});
+      const d2=await r2.json(); if(!r2.ok)alert(d2.error||'失败'); loadMods();
+    };
+    box.appendChild(div);
+  }
+}
+$('mods-refresh').onclick=loadMods;
+$('mods-lookup').onchange=loadMods;
+
 $('backup-new').onclick=async()=>{
   if(!state.current)return;
   const r=await fetch(`/api/instances/${state.current}/backup`,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:'{}'});

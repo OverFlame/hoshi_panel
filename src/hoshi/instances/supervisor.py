@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import os
 import platform
+import re
 import time
 from collections import deque
 from pathlib import Path
@@ -19,6 +20,9 @@ from .model import Instance
 State = Literal["stopped", "starting", "running", "stopping", "crashed"]
 
 RING_SIZE = 2000
+
+JOIN_RE = re.compile(r"\]: ([A-Za-z0-9_.-]{1,16}) joined the game")
+LEAVE_RE = re.compile(r"\]: ([A-Za-z0-9_.-]{1,16}) left the game")
 
 
 def decode_line(raw: bytes, preferred: str = "utf-8") -> str:
@@ -57,6 +61,9 @@ class InstanceProcess:
         self._reader: asyncio.Task[None] | None = None
         self._waiter: asyncio.Task[None] | None = None
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.players: set[str] = set()
+        self.events: deque[dict[str, Any]] = deque(maxlen=200)
+        self._event_seq = 0
 
     # ---------- 状态 ----------
 
@@ -80,6 +87,7 @@ class InstanceProcess:
             "pid": self.pid,
             "exit_code": self.exit_code,
             "uptime_s": round(time.time() - self.started_at, 1) if self.started_at else 0,
+            "players": sorted(self.players),
         }
 
     # ---------- 订阅 ----------
@@ -111,6 +119,7 @@ class InstanceProcess:
 
         self.state = "starting"
         self.exit_code = None
+        self.players.clear()
         self._broadcast({"type": "state", "state": self.state})
 
         creationflags = 0
@@ -141,6 +150,7 @@ class InstanceProcess:
         self._log_file().parent.mkdir(parents=True, exist_ok=True)
         self._reader = asyncio.create_task(self._read_output())
         self._waiter = asyncio.create_task(self._watch_exit())
+        self._push_event("server_start")
         self._broadcast({"type": "state", "state": self.state})
         return {"ok": True, "pid": self._proc.pid}
 
@@ -203,8 +213,30 @@ class InstanceProcess:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in self.instance.name)
         return self.log_dir / f"{safe}.log"
 
+    def _track_players(self, line: str) -> None:
+        joined = JOIN_RE.search(line)
+        if joined:
+            self.players.add(joined.group(1))
+            self._push_event("player_join", joined.group(1))
+            return
+        left = LEAVE_RE.search(line)
+        if left:
+            self.players.discard(left.group(1))
+            self._push_event("player_leave", left.group(1))
+
+    def _push_event(self, kind: str, player: str = "") -> None:
+        self._event_seq += 1
+        self.events.append(
+            {"id": self._event_seq, "type": kind, "player": player, "ts": time.time()}
+        )
+
+    def recent_events(self, since: int = 0, limit: int = 50) -> list[dict[str, Any]]:
+        items = [event for event in self.events if int(event.get("id", 0)) > since]
+        return items[-limit:]
+
     def _append(self, line: str) -> None:
         self.ring.append(line)
+        self._track_players(line)
         self._broadcast({"type": "log", "line": line})
         with contextlib.suppress(OSError):
             with self._log_file().open("a", encoding="utf-8", errors="replace") as fh:
@@ -229,6 +261,8 @@ class InstanceProcess:
         assert self._proc
         code = await self._proc.wait()
         self.exit_code = code
+        self.players.clear()
+        self._push_event("server_crash" if code else "server_stop")
         self.state = "stopped" if code == 0 else "crashed"
         self.started_at = None
         self._broadcast({"type": "exit", "code": code, "state": self.state})

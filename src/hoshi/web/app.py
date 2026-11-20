@@ -31,8 +31,18 @@ from ..auth import (
     verify_password,
     verify_totp,
 )
+from ..bot import TokenLimiter, render_text, status_payload
 from ..config import Config, save
-from ..db import log_setting, recent_audit, recent_settings, record
+from ..db import (
+    create_bot_token,
+    find_bot_token,
+    list_bot_tokens,
+    log_setting,
+    recent_audit,
+    recent_settings,
+    record,
+    revoke_bot_token,
+)
 from ..files import INCLUDE_SETS, UnsafePath, resolve_within, safe_extract, stream_zip
 from ..instances import (
     Instance,
@@ -44,6 +54,11 @@ from ..instances import (
     scan,
 )
 from ..instances.backup import BackupManager
+from ..instances.diagnose import diagnose
+from ..instances.migrate import execute_migration, plan_migration
+from ..instances.properties import Properties
+from ..mods import ModrinthClient, apply_lookup, scan_mods
+from ..mods import toggle as toggle_mod
 from ..security import commands, exposure, jvmargs
 from .audit_page import AUDIT_HTML
 from .index_page import INDEX_HTML
@@ -119,6 +134,15 @@ SETTINGS_HTML = """<!doctype html>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
 <main>
+<h2>bot 令牌</h2>
+<div class="item">
+  <div class="top"><div><b>只读查询令牌</b> <span class="key">bot_tokens</span></div></div>
+  <div class="why">给 QQ bot 用。绑定群号，按群每分钟 {{group_limit}} 次限速。令牌只显示一次。</div>
+  <div class="row"><input id="bot-group" placeholder="群号，例如 123456789">
+  <input id="bot-label" placeholder="备注（可选）"><button class="primary" id="bot-create">创建</button></div>
+  <div id="bot-token-msg" class="why"></div>
+  <div id="bot-token-list" class="why"></div>
+</div>
 <h2>改密码</h2>
 <div class="item">
   <div class="top"><div><b>管理员密码</b> <span class="key">auth.password_hash</span></div></div>
@@ -228,6 +252,29 @@ document.getElementById('totp-disable').onclick=async()=>{
   if(!d.ok){alert(d.error||'失败');return}
   authStatus();
 };
+async function loadBotTokens(){
+  const r=await fetch('/api/bot/tokens'); if(!r.ok)return;
+  const d=await r.json();
+  const box=document.getElementById('bot-token-list');
+  if(!d.tokens.length){box.textContent='还没有令牌';return}
+  box.innerHTML=d.tokens.map(t=>`<div>#${t.id} · 群 ${t.group_id} · ${t.label||''} · ${t.created}
+    <button data-revoke="${t.id}">吊销</button></div>`).join('');
+  box.querySelectorAll('button[data-revoke]').forEach(b=>b.onclick=async()=>{
+    await fetch('/api/bot/tokens/'+b.dataset.revoke,{method:'DELETE',headers:{'X-CSRF-Token':csrf}});
+    loadBotTokens();
+  });
+}
+document.getElementById('bot-create').onclick=async()=>{
+  const group=document.getElementById('bot-group').value.trim();
+  const label=document.getElementById('bot-label').value.trim();
+  if(!group){alert('先填群号');return}
+  const r=await fetch('/api/bot/tokens',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({group,label})});
+  const d=await r.json();
+  document.getElementById('bot-token-msg').textContent=r.ok?('令牌（只显示这一次）：'+d.token):('失败：'+(d.error||''));
+  if(r.ok) loadBotTokens();
+};
+loadBotTokens();
+
 document.getElementById('pw-save').onclick=async()=>{
   const old=document.getElementById('pw-old').value;
   const nw=document.getElementById('pw-new').value;
@@ -288,6 +335,9 @@ def create_app(
         path = request.path
         if request.method in ("GET", "POST") and path in PUBLIC_PATHS:
             return await handler(request)
+        if path.startswith("/api/bot/") and not path.startswith("/api/bot/tokens"):
+            return await handler(request)
+
         session = sessions.get(request.cookies.get(COOKIE_NAME))
         if session is None:
             if path.startswith("/api/") or path.startswith("/ws/"):
@@ -412,7 +462,9 @@ def create_app(
         return web.json_response({"ok": True, "sessions_revoked": dropped})
 
     async def settings_page(request: web.Request) -> web.Response:
-        text = SETTINGS_HTML.replace("{{app}}", APP_NAME)
+        text = SETTINGS_HTML.replace("{{app}}", APP_NAME).replace(
+            "{{group_limit}}", str(config.get("bot.group_limit"))
+        )
         return web.Response(text=text, content_type="text/html")
 
     # ---------- 设置 ----------
@@ -773,11 +825,20 @@ def create_app(
         upload_dir = data_dir / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         temp = upload_dir / f"{uuid.uuid4().hex}.zip"
+        limit = int(config.get("files.max_upload_mb")) * 1024 * 1024
+        written = 0
         with temp.open("wb") as fh:
             while True:
                 chunk = await field.read_chunk()
                 if not chunk:
                     break
+                written += len(chunk)
+                if written > limit:
+                    fh.close()
+                    temp.unlink(missing_ok=True)
+                    return web.json_response(
+                        {"ok": False, "error": f"超过上传上限 {limit // (1024 * 1024)} MB"}, status=413
+                    )
                 fh.write(chunk)
         try:
             skipped = safe_extract(temp, instance.root)
@@ -854,11 +915,21 @@ def create_app(
                 name_field = await field.text()
             elif field.name == "file":
                 # multipart 的字段必须就地读完，留着稍后再读会拿到空内容
+                limit = int(config.get("files.max_upload_mb")) * 1024 * 1024
+                written = 0
                 with temp.open("wb") as fh:
                     while True:
                         chunk = await field.read_chunk()
                         if not chunk:
                             break
+                        written += len(chunk)
+                        if written > limit:
+                            fh.close()
+                            temp.unlink(missing_ok=True)
+                            return web.json_response(
+                                {"ok": False, "error": f"超过上传上限 {limit // (1024 * 1024)} MB"},
+                                status=413,
+                            )
                         fh.write(chunk)
                 uploaded = True
         if not uploaded:
@@ -899,6 +970,246 @@ def create_app(
         registry.add(instance)
         audit(request[SESSION_KEY].username, "pack.import", target=instance.id, result="ok", detail=pack_name)
         return web.json_response({"ok": True, "instance": instance.to_dict(), "skipped": skipped})
+
+
+    # ---------- 模组 ----------
+
+    async def list_mods(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        mods_dir = instance.root / "mods"
+        items = await asyncio.get_running_loop().run_in_executor(None, scan_mods, mods_dir)
+        if request.query.get("lookup") == "1" and bool(config.get("mods.side_lookup")):
+            client = ModrinthClient(data_dir / "cache" / "modrinth.json")
+            found = await client.lookup([item.sha1 for item in items if item.sha1])
+            apply_lookup(items, found)
+        return web.json_response(
+            {
+                "mods": [item.to_dict() for item in items],
+                "summary": {
+                    "total": len(items),
+                    "enabled": sum(1 for item in items if item.enabled),
+                    "client_only": sum(1 for item in items if item.side == "client"),
+                    "unknown": sum(1 for item in items if item.side == "unknown"),
+                },
+            }
+        )
+
+    async def toggle_mod_handler(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        payload = await _read_payload(request)
+        file = str(payload.get("file", ""))
+        enabled = bool(payload.get("enabled", True))
+        proc = current_app[PROCESSES_KEY].get(instance_id)
+        if proc is not None and proc.running:
+            return web.json_response({"ok": False, "error": "服务器运行中，先停止再改模组"}, status=409)
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(
+                None, toggle_mod, instance.root / "mods", file, enabled
+            )
+        except FileNotFoundError:
+            return web.json_response({"ok": False, "error": "文件不存在"}, status=404)
+        except FileExistsError as exc:
+            return web.json_response({"ok": False, "error": f"已存在同名文件: {exc}"}, status=409)
+        audit(request[SESSION_KEY].username, "mods.toggle", target=file, result="ok", detail=str(result.name))
+        return web.json_response({"ok": True, "file": result.name, "enabled": enabled})
+
+    # ---------- 属性编辑 ----------
+
+    async def get_properties(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        path = instance.root / "server.properties"
+        if not path.is_file():
+            return web.json_response({"ok": False, "error": "没有 server.properties"}, status=404)
+        props = await asyncio.get_running_loop().run_in_executor(None, Properties.load, path)
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        return web.json_response(
+            {
+                "entries": props.as_list(),
+                "read_only": bool(proc and proc.running),
+                "text": props.to_text(),
+            }
+        )
+
+    async def put_properties(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        if proc is not None and proc.running:
+            return web.json_response({"ok": False, "error": "运行中只读，先停止服务器"}, status=409)
+        payload = await _read_payload(request)
+        changes = payload.get("values") or {}
+        if not isinstance(changes, dict):
+            return web.json_response({"ok": False, "error": "values 需要是对象"}, status=400)
+        path = instance.root / "server.properties"
+        props = await asyncio.get_running_loop().run_in_executor(None, Properties.load, path) if path.is_file() else Properties()
+        backup = path.with_suffix(".properties.bak")
+        if path.is_file():
+            backup.write_bytes(path.read_bytes())
+        for key, value in changes.items():
+            if not str(key).strip():
+                continue
+            props.set(str(key).strip(), str(value))
+        props.save(path)
+        audit(request[SESSION_KEY].username, "properties", target=instance.id, result="ok",
+              detail=", ".join(list(changes)[:8]))
+        return web.json_response({"ok": True, "changed": list(changes), "backup": str(backup)})
+
+    # ---------- 迁移 ----------
+
+    async def migrate_instance(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        payload = await _read_payload(request)
+        target = str(payload.get("target", "")).strip()
+        if not target:
+            return web.json_response({"ok": False, "error": "缺少 target"}, status=400)
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        plan = await asyncio.get_running_loop().run_in_executor(
+            None, plan_migration, instance, target, bool(proc and proc.running)
+        )
+        if not plan.ok:
+            return web.json_response({"ok": False, "errors": plan.errors, "warnings": plan.warnings}, status=400)
+        try:
+            new_path = await asyncio.get_running_loop().run_in_executor(
+                None, execute_migration, instance, plan, bool(payload.get("remove_source", True))
+            )
+        except (OSError, ValueError) as exc:
+            return web.json_response({"ok": False, "errors": [str(exc)]}, status=500)
+        registry.update(instance)
+        audit(request[SESSION_KEY].username, "migrate", target=instance.id, result="ok", detail=str(new_path))
+        return web.json_response(
+            {"ok": True, "directory": str(new_path), "warnings": plan.warnings, "bytes": plan.total_bytes}
+        )
+
+    # ---------- bot ----------
+
+    def _bot_auth(request: web.Request) -> dict[str, object] | None:
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return None
+        return find_bot_token(db, header[7:].strip()) if db is not None else None
+
+    def _bot_process(instance_name: str) -> tuple[str, InstanceProcess] | tuple[None, None]:
+        instances = registry.all()
+        if not instances:
+            return None, None
+        target = instances[0]
+        if instance_name:
+            for item in instances:
+                if instance_name in (item.name, item.id):
+                    target = item
+                    break
+        processes: dict[str, InstanceProcess] = current_app[PROCESSES_KEY]
+        if target.id not in processes:
+            processes[target.id] = InstanceProcess(target, log_dir)
+        return target.name, processes[target.id]
+
+    async def bot_guard(request: web.Request) -> tuple[dict[str, object] | None, web.Response | None]:
+        token = _bot_auth(request)
+        if token is None:
+            return None, web.json_response({"ok": False, "error": "invalid token"}, status=401)
+        wait = bot_limiter.check(int(token["id"]), request.headers.get("X-Bot-User", ""))
+        if wait:
+            message = str(config.get("bot.limit_message") or "查询太频繁，{wait} 秒后再试").replace(
+                "{wait}", str(wait)
+            )
+            return token, web.json_response(
+                {"ok": False, "error": message},
+                status=429,
+                headers={"Retry-After": str(wait)},
+            )
+        return token, None
+
+    async def bot_status(request: web.Request) -> web.Response:
+        token, blocked = await bot_guard(request)
+        if blocked is not None:
+            return blocked
+        name, proc = _bot_process(request.query.get("instance", ""))
+        if proc is None:
+            return web.json_response({"ok": False, "error": "没有实例"}, status=404)
+        data = status_payload(proc, name or "")
+        if request.query.get("format") == "text":
+            return web.Response(text=render_text(data, config), content_type="text/plain")
+        return web.json_response(data)
+
+    async def bot_players(request: web.Request) -> web.Response:
+        token, blocked = await bot_guard(request)
+        if blocked is not None:
+            return blocked
+        name, proc = _bot_process(request.query.get("instance", ""))
+        if proc is None:
+            return web.json_response({"ok": False, "error": "没有实例"}, status=404)
+        return web.json_response(
+            {"instance": name, "online": len(proc.players), "names": sorted(proc.players)}
+        )
+
+    async def bot_events(request: web.Request) -> web.Response:
+        token, blocked = await bot_guard(request)
+        if blocked is not None:
+            return blocked
+        name, proc = _bot_process(request.query.get("instance", ""))
+        if proc is None:
+            return web.json_response({"ok": False, "error": "没有实例"}, status=404)
+        since = int(request.query.get("since", 0))
+        events = [
+            {**event, "instance": name}
+            for event in proc.recent_events(since, int(request.query.get("limit", 50)))
+        ]
+        return web.json_response({"events": events})
+
+    async def bot_tokens_list(_: web.Request) -> web.Response:
+        return web.json_response({"tokens": list_bot_tokens(db) if db is not None else []})
+
+    async def bot_tokens_create(request: web.Request) -> web.Response:
+        payload = await _read_payload(request)
+        group = str(payload.get("group", "")).strip()
+        if not group:
+            return web.json_response({"ok": False, "error": "缺少 group"}, status=400)
+        token_id, token = create_bot_token(db, group, str(payload.get("label", "")))
+        audit(request[SESSION_KEY].username, "bot.token", target=group, result="ok", detail=str(token_id))
+        return web.json_response({"ok": True, "id": token_id, "token": token})
+
+    async def bot_tokens_revoke(request: web.Request) -> web.Response:
+        token_id = int(request.match_info["id"])
+        ok = revoke_bot_token(db, token_id)
+        if not ok:
+            return web.json_response({"ok": False, "error": "不存在"}, status=404)
+        audit(request[SESSION_KEY].username, "bot.token.revoke", target=str(token_id), result="ok")
+        return web.json_response({"ok": True})
+
+
+    # ---------- 诊断 ----------
+
+    async def diagnose_instance(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        try:
+            proc = process_for(instance_id)
+        except InstanceNotFound:
+            return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        lines = proc.snapshot(int(request.query.get("lines", 400)))
+        findings = diagnose(lines)
+        return web.json_response(
+            {
+                "instance": instance_id,
+                "state": proc.state,
+                "exit_code": proc.exit_code,
+                "findings": [item.to_dict() for item in findings],
+                "lines_scanned": len(lines),
+            }
+        )
+
+    async def quick_commands(_: web.Request) -> web.Response:
+        presets = [
+            {"command": "list", "label": "看在线玩家", "confirm": False},
+            {"command": "save-all", "label": "立即存盘", "confirm": False},
+            {"command": "weather clear", "label": "切晴天", "confirm": False},
+            {"command": "time set day", "label": "切白天", "confirm": False},
+            {"command": "difficulty normal", "label": "难度调普通", "confirm": False},
+            {"command": "whitelist reload", "label": "重载白名单", "confirm": True},
+            {"command": "reload", "label": "重载数据包与配置", "confirm": True},
+            {"command": "stop", "label": "停止服务器", "confirm": True},
+        ]
+        return web.json_response({"commands": presets})
 
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
@@ -990,6 +1301,10 @@ def create_app(
     app[PENDING_KEY] = {}
     current_app = app
     backup_manager = BackupManager(data_dir / "backups", retention=10)
+    bot_limiter = TokenLimiter(
+        group_limit=int(config.get("bot.group_limit")),
+        user_limit=int(config.get("bot.user_limit")),
+    )
 
     app.router.add_get("/login", login_page)
     app.router.add_post("/api/login", login_submit)
@@ -1024,6 +1339,19 @@ def create_app(
     app.router.add_post("/api/instances/{id}/backups/{name}/restore", backups_restore)
     app.router.add_delete("/api/instances/{id}/backups/{name}", backups_delete)
     app.router.add_post("/api/packs/import", import_pack)
+    app.router.add_get("/api/instances/{id}/mods", list_mods)
+    app.router.add_post("/api/instances/{id}/mods/toggle", toggle_mod_handler)
+    app.router.add_get("/api/instances/{id}/properties", get_properties)
+    app.router.add_put("/api/instances/{id}/properties", put_properties)
+    app.router.add_post("/api/instances/{id}/migrate", migrate_instance)
+    app.router.add_get("/api/instances/{id}/diagnose", diagnose_instance)
+    app.router.add_get("/api/commands", quick_commands)
+    app.router.add_get("/api/bot/status", bot_status)
+    app.router.add_get("/api/bot/players", bot_players)
+    app.router.add_get("/api/bot/events", bot_events)
+    app.router.add_get("/api/bot/tokens", bot_tokens_list)
+    app.router.add_post("/api/bot/tokens", bot_tokens_create)
+    app.router.add_delete("/api/bot/tokens/{id}", bot_tokens_revoke)
     app.router.add_get("/api/java", java_list)
     app.router.add_get("/api/java/probe", java_probe)
     app.router.add_get("/ws/console/{id}", ws_console)
