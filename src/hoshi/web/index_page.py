@@ -37,7 +37,8 @@ INDEX_HTML = r"""<!doctype html>
  #cmd input{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
  .toolbar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #23262d;font-size:.85rem}
  .toolbar input{padding:6px 8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
- #filelist,#backuplist{flex:1;overflow:auto;padding:0 10px 10px}
+ #filelist,#backuplist,#modlist{flex:1;min-height:0;overflow:auto;padding:0 10px 10px}
+ #inssettings,#markerlist{min-height:0}
  .fitem,.bitem{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid #1c1f26;font-size:.85rem}
  .fitem{cursor:pointer}
  .fitem:hover{background:#141821}
