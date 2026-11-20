@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import segno
 from aiohttp import WSMsgType, web
 
@@ -57,6 +58,26 @@ from ..instances.backup import BackupManager
 from ..instances.diagnose import diagnose
 from ..instances.migrate import execute_migration, plan_migration
 from ..instances.properties import Properties
+from ..map import (
+    MarkerStore,
+    PlayerPoller,
+    find_cached,
+    install_jar,
+    is_installed,
+    load_secret,
+)
+from ..map import (
+    issue as issue_share,
+)
+from ..map import (
+    plan as bluemap_plan,
+)
+from ..map import (
+    verify as verify_share,
+)
+from ..map import (
+    write_config as write_bluemap_config,
+)
 from ..mods import ModrinthClient, apply_lookup, scan_mods
 from ..mods import toggle as toggle_mod
 from ..security import commands, exposure, jvmargs
@@ -335,6 +356,9 @@ def create_app(
         path = request.path
         if request.method in ("GET", "POST") and path in PUBLIC_PATHS:
             return await handler(request)
+        if path.startswith("/map"):
+            return await handler(request)
+
         if path.startswith("/api/bot/") and not path.startswith("/api/bot/tokens"):
             return await handler(request)
 
@@ -1211,6 +1235,180 @@ def create_app(
         ]
         return web.json_response({"commands": presets})
 
+
+    # ---------- 地图 ----------
+
+    def map_secret() -> bytes:
+        return load_secret(data_dir)
+
+    def map_allowed(request: web.Request) -> bool:
+        if sessions.get(request.cookies.get(COOKIE_NAME)):
+            return True
+        token = request.cookies.get("hoshi_map_share") or request.query.get("t", "")
+        if not token:
+            return False
+        ok, _ = verify_share(map_secret(), token)
+        return ok
+
+    async def map_proxy(request: web.Request) -> web.StreamResponse:
+        if not bool(config.get("map.enabled")):
+            return web.json_response({"ok": False, "error": "地图未启用"}, status=404)
+        token = request.query.get("t", "")
+        if token and not sessions.get(request.cookies.get(COOKIE_NAME)):
+            ok, instance = verify_share(map_secret(), token)
+            if not ok:
+                return web.Response(text="链接无效或已过期", status=403)
+            response = web.HTTPFound("/map/")
+            response.set_cookie("hoshi_map_share", token, httponly=True, samesite="Lax", path="/")
+            raise response
+        if not map_allowed(request):
+            raise web.HTTPFound("/login")
+
+        upstream = str(config.get("map.upstream")).rstrip("/")
+        tail = request.match_info.get("tail", "")
+        url = f"{upstream}/{tail}" if tail else f"{upstream}/"
+        try:
+            async with map_http().get(url, allow_redirects=False) as resp:
+                headers = {
+                    key: value
+                    for key, value in resp.headers.items()
+                    if key.lower() in ("content-type", "cache-control", "etag", "last-modified")
+                }
+                out = web.StreamResponse(status=resp.status, headers=headers)
+                await out.prepare(request)
+                async for chunk in resp.content.iter_any():
+                    await out.write(chunk)
+                await out.write_eof()
+                return out
+        except (TimeoutError, aiohttp.ClientError):
+            return web.Response(text="地图服务未启动", status=502)
+
+    async def map_status(request: web.Request) -> web.Response:
+        instance_id = request.query.get("instance", "")
+        instances = registry.all()
+        target = instances[0] if instances else None
+        for item in instances:
+            if instance_id and instance_id in (item.id, item.name):
+                target = item
+        data: dict[str, object] = {
+            "enabled": bool(config.get("map.enabled")),
+            "upstream": config.get("map.upstream"),
+            "instances": [item.name for item in instances],
+        }
+        if target is not None:
+            data["instance"] = target.name
+            data["jar_installed"] = is_installed(target.root)
+            data["plan"] = {
+                "asset": bluemap_plan(target.root, data_dir).asset,
+                "maps": bluemap_plan(target.root, data_dir).maps,
+            }
+            poller = pollers.get(target.id)
+            data["players"] = poller.snapshot() if poller else {"connected": False, "players": []}
+        return web.json_response(data)
+
+    async def map_players(request: web.Request) -> web.Response:
+        instance_id = request.query.get("instance", "")
+        instances = registry.all()
+        for item in instances:
+            if instance_id in (item.id, item.name):
+                poller = pollers.get(item.id)
+                return web.json_response(poller.snapshot() if poller else {"connected": False, "players": []})
+        if len(instances) == 1:
+            poller = pollers.get(instances[0].id)
+            return web.json_response(poller.snapshot() if poller else {"connected": False, "players": []})
+        return web.json_response({"connected": False, "players": []})
+
+    async def map_poll_start(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        if not bool(config.get("map.enabled")):
+            return web.json_response({"ok": False, "error": "先开启地图"}, status=400)
+        props_path = instance.root / "server.properties"
+        props = Properties.load(props_path) if props_path.is_file() else Properties()
+        if props.get("enable-rcon", "false").lower() != "true":
+            return web.json_response({"ok": False, "error": "server.properties 里 enable-rcon 不是 true"}, status=400)
+        poller = PlayerPoller(
+            host="127.0.0.1",
+            port=int(props.get("rcon.port", "25575")),
+            password=props.get("rcon.password", ""),
+            interval=float(config.get("map.player_poll_seconds")),
+        )
+        pollers[instance.id] = poller
+        await poller.start()
+        await poller.poll_once()
+        return web.json_response({"ok": True, **poller.snapshot()})
+
+    async def map_markers(request: web.Request) -> web.Response:
+        instance = registry.get(request.query.get("instance", "")) if request.query.get("instance") else registry.all()[0]
+        if request.method == "GET":
+            return web.json_response({"markers": markers.list(instance.name)})
+        payload = await _read_payload(request)
+        if request.method == "DELETE":
+            ok = markers.remove(instance.name, str(payload.get("id", request.query.get("id", ""))))
+            return web.json_response({"ok": ok}, status=200 if ok else 404)
+        try:
+            marker = markers.add(
+                instance.name,
+                str(payload.get("name", "")),
+                float(payload.get("x", 0)),
+                float(payload.get("z", 0)),
+                float(payload.get("y", 64)),
+                str(payload.get("color", "red")),
+                str(payload.get("note", "")),
+            )
+        except (TypeError, ValueError):
+            return web.json_response({"ok": False, "error": "坐标需要是数字"}, status=400)
+        audit(request[SESSION_KEY].username, "marker.add", target=instance.name, result="ok", detail=marker["name"])
+        return web.json_response({"ok": True, "marker": marker})
+
+    async def map_config(request: web.Request) -> web.Response:
+        if request.method == "GET":
+            instances = registry.all()
+            if not instances:
+                return web.json_response({"ok": False, "error": "没有实例"}, status=404)
+            result = bluemap_plan(instances[0].root, data_dir)
+            return web.json_response(
+                {
+                    "asset": result.asset,
+                    "version": result.version,
+                    "maps": result.maps,
+                    "webroot": str(result.webroot),
+                    "config_dir": str(result.config_dir),
+                }
+            )
+        instance = registry.get(request.match_info.get("id", "") or registry.all()[0].id)
+        payload = await _read_payload(request)
+        result = write_bluemap_config(
+            instance.root,
+            data_dir,
+            mc_version=str(payload.get("mc_version", "1.20.1")),
+            accept_download=bool(config.get("map.accept_download")),
+            threads=int(config.get("map.render_threads")),
+        )
+        installed = False
+        cached = find_cached(data_dir, result.asset)
+        if cached is not None:
+            install_jar(instance.root, cached)
+            installed = True
+        audit(request[SESSION_KEY].username, "map.config", target=instance.id, result="ok", detail=result.asset)
+        return web.json_response(
+            {
+                "ok": True,
+                "asset": result.asset,
+                "config_dir": str(result.config_dir),
+                "webroot": str(result.webroot),
+                "jar_installed": installed,
+                "cached": bool(cached),
+            }
+        )
+
+    async def map_share(request: web.Request) -> web.Response:
+        payload = await _read_payload(request)
+        instance_name = str(payload.get("instance") or (registry.all()[0].name if registry.all() else "map"))
+        ttl = int(config.get("map.share_ttl_hours")) * 3600
+        token = issue_share(map_secret(), instance_name, ttl, str(payload.get("label", "")))
+        audit(request[SESSION_KEY].username, "map.share", target=instance_name, result="ok")
+        return web.json_response({"ok": True, "url": f"/map/?t={token}", "ttl_hours": ttl // 3600})
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -1301,6 +1499,15 @@ def create_app(
     app[PENDING_KEY] = {}
     current_app = app
     backup_manager = BackupManager(data_dir / "backups", retention=10)
+    markers = MarkerStore(data_dir / "markers")
+    pollers: dict[str, PlayerPoller] = {}
+    map_session: aiohttp.ClientSession | None = None
+
+    def map_http() -> aiohttp.ClientSession:
+        nonlocal map_session
+        if map_session is None or map_session.closed:
+            map_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25, connect=3))
+        return map_session
     bot_limiter = TokenLimiter(
         group_limit=int(config.get("bot.group_limit")),
         user_limit=int(config.get("bot.user_limit")),
@@ -1345,6 +1552,14 @@ def create_app(
     app.router.add_put("/api/instances/{id}/properties", put_properties)
     app.router.add_post("/api/instances/{id}/migrate", migrate_instance)
     app.router.add_get("/api/instances/{id}/diagnose", diagnose_instance)
+    app.router.add_get("/api/map/status", map_status)
+    app.router.add_get("/api/map/players", map_players)
+    app.router.add_post("/api/instances/{id}/map/poll", map_poll_start)
+    app.router.add_route("*", "/api/map/markers", map_markers)
+    app.router.add_get("/api/map/config", map_config)
+    app.router.add_post("/api/instances/{id}/map/config", map_config)
+    app.router.add_post("/api/map/share", map_share)
+    app.router.add_get("/map/{tail:.*}", map_proxy)
     app.router.add_get("/api/commands", quick_commands)
     app.router.add_get("/api/bot/status", bot_status)
     app.router.add_get("/api/bot/players", bot_players)
@@ -1357,12 +1572,19 @@ def create_app(
     app.router.add_get("/ws/console/{id}", ws_console)
     app.router.add_route("*", "/{tail:.*}", not_found)
 
+    async def close_map(_: web.Application) -> None:
+        for poller in pollers.values():
+            await poller.stop()
+        if map_session is not None and not map_session.closed:
+            await map_session.close()
+
     async def close_processes(_: web.Application) -> None:
         processes: dict[str, InstanceProcess] = app[PROCESSES_KEY]
         for proc in processes.values():
             await proc.shutdown()
 
     app.on_shutdown.append(close_processes)
+    app.on_shutdown.append(close_map)
     return app
 
 
