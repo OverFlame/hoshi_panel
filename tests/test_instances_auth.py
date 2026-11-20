@@ -164,3 +164,23 @@ def test_java_range_and_pick():
     assert pick_for("1.16.5", candidates).path == "jdk8"
     assert pick_for("1.21.4", candidates).path == "jdk25"
     assert pick_for("1.20.1", [JavaInfo(path="jdk25", version="25")]) is None
+
+def test_quiet_disconnect_filter():
+    import asyncio
+
+    from hoshi.compat import install_quiet_disconnects
+
+    loop = asyncio.new_event_loop()
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, ctx: seen.append(str(ctx.get("message"))))
+    install_quiet_disconnects(loop)
+
+    handler = loop.get_exception_handler()
+    assert handler is not None
+    handler(loop, {"message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost(None)",
+                   "exception": ConnectionResetError(10054, "远程主机强迫关闭了一个现有的连接")})
+    assert seen == [], "断连不应进入默认处理器"
+
+    handler(loop, {"message": "其他错误", "exception": ValueError("boom")})
+    assert seen == ["其他错误"], "其他异常要照常上报"
+    loop.close()

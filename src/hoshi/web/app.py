@@ -34,6 +34,7 @@ from ..auth import (
     verify_totp,
 )
 from ..bot import TokenLimiter, render_text, status_payload
+from ..compat import install_for_running_loop
 from ..config import Config, save
 from ..db import (
     create_bot_token,
@@ -1873,7 +1874,10 @@ def create_app(
         async def pump() -> None:
             while True:
                 message = await queue.get()
-                await ws.send_json(message)
+                try:
+                    await ws.send_json(message)
+                except (ConnectionResetError, ConnectionAbortedError):
+                    return
 
         pump_task = asyncio.create_task(pump())
         try:
@@ -1965,7 +1969,11 @@ def create_app(
     async def not_found(_: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
+    async def quiet_disconnects(_: web.Application) -> None:
+        install_for_running_loop()
+
     app = web.Application(middlewares=[require_session])
+    app.on_startup.append(quiet_disconnects)
     app[CONFIG_KEY] = config
     app[REGISTRY_KEY] = registry
     app[SESSIONS_KEY] = sessions
