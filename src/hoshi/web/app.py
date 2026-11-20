@@ -78,6 +78,9 @@ from ..map import (
 from ..map import (
     write_config as write_bluemap_config,
 )
+from ..map import (
+    write_markers as write_bluemap_markers,
+)
 from ..mods import ModrinthClient, apply_lookup, scan_mods
 from ..mods import toggle as toggle_mod
 from ..security import commands, exposure, jvmargs
@@ -309,6 +312,35 @@ authStatus();
 load();
 </script>
 </body></html>
+"""
+
+
+
+MAP_OVERLAY_JS = """
+(() => {
+  const panel = document.createElement('div');
+  panel.id = 'hoshi-overlay';
+  panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;background:#0f1115dd;color:#e6e6e6;'
+    + 'border:1px solid #2c313a;border-radius:10px;padding:10px 12px;font:12px/1.6 system-ui,sans-serif;'
+    + 'max-width:280px;backdrop-filter:blur(4px)';
+  panel.innerHTML = '<b>面板 · 在线玩家</b><div id="hoshi-players">读取中…</div>';
+  document.body.appendChild(panel);
+  const box = panel.querySelector('#hoshi-players');
+  async function tick() {
+    try {
+      const r = await fetch('/api/map/players', { credentials: 'same-origin' });
+      if (!r.ok) { box.textContent = '需要登录面板'; return; }
+      const d = await r.json();
+      if (!d.connected) { box.textContent = 'RCON 未连接'; return; }
+      if (!d.players.length) { box.textContent = '无人在线'; return; }
+      box.innerHTML = d.players.map(p =>
+        `<div>${p.name} · ${p.x}, ${p.z} <span style="opacity:.6">${p.dimension.replace('minecraft:', '')}</span></div>`
+      ).join('');
+    } catch (e) { box.textContent = '读取失败'; }
+  }
+  tick();
+  setInterval(tick, 5000);
+})();
 """
 
 
@@ -1267,6 +1299,19 @@ def create_app(
         upstream = str(config.get("map.upstream")).rstrip("/")
         tail = request.match_info.get("tail", "")
         url = f"{upstream}/{tail}" if tail else f"{upstream}/"
+
+        if tail in ("", "index.html"):
+            try:
+                async with map_http().get(url, allow_redirects=False) as resp:
+                    if resp.status == 200:
+                        html = await resp.text(errors="replace")
+                        html = html.replace(
+                            "</body>", '<script src="/map-overlay.js"></script></body>'
+                        )
+                        return web.Response(text=html, content_type="text/html")
+                    return web.Response(text=await resp.text(errors="replace"), status=resp.status)
+            except (aiohttp.ClientError, TimeoutError):
+                return web.Response(text="地图服务未启动", status=502)
         try:
             async with map_http().get(url, allow_redirects=False) as resp:
                 headers = {
@@ -1282,6 +1327,11 @@ def create_app(
                 return out
         except (TimeoutError, aiohttp.ClientError):
             return web.Response(text="地图服务未启动", status=502)
+
+    async def map_overlay_js(request: web.Request) -> web.Response:
+        if not map_allowed(request):
+            return web.Response(text="// unauthorized", content_type="application/javascript", status=401)
+        return web.Response(text=MAP_OVERLAY_JS, content_type="application/javascript")
 
     async def map_status(request: web.Request) -> web.Response:
         instance_id = request.query.get("instance", "")
@@ -1337,6 +1387,30 @@ def create_app(
         await poller.poll_once()
         return web.json_response({"ok": True, **poller.snapshot()})
 
+    def apply_markers(instance: Instance) -> dict[str, object]:
+        """把标记写进 BlueMap 配置；服端在跑就顺手 reload。"""
+        try:
+            path = write_bluemap_markers(instance.root, data_dir, markers.list(instance.name))
+        except FileNotFoundError:
+            return {"applied": False, "reason": "先生成地图配置", "path": ""}
+        except OSError as exc:
+            return {"applied": False, "reason": str(exc), "path": ""}
+        reloaded = False
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        if proc is not None and proc.running:
+            result = await_send(proc, "bluemap reload")
+            reloaded = bool(result)
+        return {"applied": True, "path": str(path), "reloaded": reloaded}
+
+    def await_send(proc: InstanceProcess, text: str) -> bool:
+        """同步上下文里发命令，尽力而为。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        loop.create_task(proc.send(text))
+        return True
+
     async def map_markers(request: web.Request) -> web.Response:
         instance = registry.get(request.query.get("instance", "")) if request.query.get("instance") else registry.all()[0]
         if request.method == "GET":
@@ -1344,7 +1418,8 @@ def create_app(
         payload = await _read_payload(request)
         if request.method == "DELETE":
             ok = markers.remove(instance.name, str(payload.get("id", request.query.get("id", ""))))
-            return web.json_response({"ok": ok}, status=200 if ok else 404)
+            applied = apply_markers(instance) if ok else {"applied": False}
+            return web.json_response({"ok": ok, "bluemap": applied}, status=200 if ok else 404)
         try:
             marker = markers.add(
                 instance.name,
@@ -1357,8 +1432,14 @@ def create_app(
             )
         except (TypeError, ValueError):
             return web.json_response({"ok": False, "error": "坐标需要是数字"}, status=400)
+        applied = apply_markers(instance)
         audit(request[SESSION_KEY].username, "marker.add", target=instance.name, result="ok", detail=marker["name"])
-        return web.json_response({"ok": True, "marker": marker})
+        return web.json_response({"ok": True, "marker": marker, "bluemap": applied})
+
+    async def map_apply_markers(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        result = apply_markers(instance)
+        return web.json_response({"ok": bool(result.get("applied")), **result})
 
     async def map_config(request: web.Request) -> web.Response:
         if request.method == "GET":
@@ -1554,11 +1635,13 @@ def create_app(
     app.router.add_get("/api/instances/{id}/diagnose", diagnose_instance)
     app.router.add_get("/api/map/status", map_status)
     app.router.add_get("/api/map/players", map_players)
+    app.router.add_post("/api/instances/{id}/map/markers/apply", map_apply_markers)
     app.router.add_post("/api/instances/{id}/map/poll", map_poll_start)
     app.router.add_route("*", "/api/map/markers", map_markers)
     app.router.add_get("/api/map/config", map_config)
     app.router.add_post("/api/instances/{id}/map/config", map_config)
     app.router.add_post("/api/map/share", map_share)
+    app.router.add_get("/map-overlay.js", map_overlay_js)
     app.router.add_get("/map/{tail:.*}", map_proxy)
     app.router.add_get("/api/commands", quick_commands)
     app.router.add_get("/api/bot/status", bot_status)

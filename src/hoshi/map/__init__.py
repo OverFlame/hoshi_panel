@@ -3,7 +3,17 @@
 proxy.py 提供把 BlueMap 的 webroot 反代到面板 /map/ 的处理。
 """
 
-from .bluemap import BlueMapPlan, find_cached, install_jar, is_installed, pick_asset, plan, write_config
+from .bluemap import (
+    BlueMapPlan,
+    find_cached,
+    install_jar,
+    is_installed,
+    marker_set_block,
+    pick_asset,
+    plan,
+    write_config,
+    write_markers,
+)
 from .markers import MarkerStore
 from .players import PlayerPoller, PlayerPos
 from .rcon import RconError, RconResult, command
@@ -26,4 +36,6 @@ __all__ = [
     "plan",
     "verify",
     "write_config",
+    "write_markers",
+    "marker_set_block",
 ]

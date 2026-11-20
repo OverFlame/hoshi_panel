@@ -63,6 +63,7 @@ INDEX_HTML = """<!doctype html>
     <button class="tab active" data-pane="console">控制台</button>
     <button class="tab" data-pane="files">文件</button>
     <button class="tab" data-pane="mods">模组</button>
+    <button class="tab" data-pane="map">地图</button>
     <button class="tab" data-pane="backups">备份</button>
     <button class="tab" id="export">导出 zip</button>
   </div>
@@ -80,6 +81,25 @@ INDEX_HTML = """<!doctype html>
       <label class="muted"><input type="checkbox" id="mods-lookup" checked> 在线查侧别</label>
       <span class="muted" id="mods-summary"></span></div>
     <div id="modlist"></div>
+  </div>
+  <div class="pane" id="pane-map">
+    <div class="toolbar">
+      <button id="map-open">打开地图</button>
+      <button id="map-share">生成共享链接</button>
+      <button id="map-refresh">刷新</button>
+      <span class="muted" id="map-status"></span>
+    </div>
+    <div class="toolbar" style="flex-wrap:wrap">
+      <input id="mk-name" placeholder="标记名" style="width:110px">
+      <input id="mk-x" placeholder="X" style="width:70px">
+      <input id="mk-y" placeholder="Y" style="width:70px" value="64">
+      <input id="mk-z" placeholder="Z" style="width:70px">
+      <select id="mk-color"><option>red</option><option>blue</option><option>green</option><option>yellow</option><option>purple</option><option>orange</option><option>white</option></select>
+      <input id="mk-note" placeholder="备注" style="width:140px">
+      <button class="primary" id="mk-add">加标记</button>
+    </div>
+    <div id="players" class="muted" style="padding:0 10px"></div>
+    <div id="markerlist" style="flex:1;overflow:auto;padding:0 10px 10px"></div>
   </div>
   <div class="pane" id="pane-backups">
     <div class="toolbar"><button id="backup-new">创建备份</button><span class="muted" id="retention"></span></div>
@@ -138,7 +158,7 @@ async function select(id){
   };
   ws.onopen=()=>{$('text').disabled=false;$('send').disabled=false};
   ws.onclose=()=>{$('text').disabled=true;$('send').disabled=true};
-  loadFiles(''); loadBackups(); loadMods();
+  loadFiles(''); loadBackups(); loadMods(); loadMap();
 }
 async function send(){
   const text=$('text').value.trim(); if(!text||!state.ws)return;
@@ -192,6 +212,48 @@ $('editor-save').onclick=async()=>{
   const d=await r.json();
   if(!r.ok){alert(d.error||'保存失败');return}
   $('editor').style.display='none';
+};
+
+async function loadMap(){
+  if(!state.current)return;
+  const st=await (await fetch('/api/map/status')).json();
+  $('map-status').textContent=st.enabled?('上游 '+st.upstream+' · '+(st.jar_installed?'jar 已装':'jar 未装')):'地图未启用（设置里打开 map.enabled）';
+  const pl=await (await fetch(`/api/map/players?instance=${encodeURIComponent(st.instance||'')}`)).json();
+  $('players').textContent=pl.connected?('在线：'+pl.players.map(p=>`${p.name}(${p.x},${p.z} ${p.dimension.replace('minecraft:','')})`).join('  ')):'玩家位置未连接（需要 RCON）';
+  const mk=await (await fetch(`/api/map/markers?instance=${encodeURIComponent(st.instance||'')}`)).json();
+  const box=$('markerlist'); box.innerHTML='';
+  if(!mk.markers.length){box.innerHTML='<p class="muted">还没有标记</p>';return}
+  for(const m of mk.markers){
+    const div=document.createElement('div'); div.className='bitem';
+    div.innerHTML=`<span class="fname">${m.name}</span>
+      <span class="muted">(${m.x}, ${m.y}, ${m.z}) ${m.color} ${m.note||''}</span>
+      <button>删除</button>`;
+    div.querySelector('button').onclick=async()=>{
+      await fetch(`/api/map/markers?id=${m.id}&instance=${encodeURIComponent(st.instance||'')}`,{method:'DELETE',headers:H});
+      loadMap();
+    };
+    box.appendChild(div);
+  }
+}
+$('map-refresh').onclick=loadMap;
+$('map-open').onclick=()=>{location.href='/map/'};
+$('map-share').onclick=async()=>{
+  const r=await fetch('/api/map/share',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:'{}'});
+  const d=await r.json();
+  if(!r.ok){alert(d.error||'失败');return}
+  const url=location.origin+d.url;
+  prompt('只读链接（复制给朋友）：',url);
+};
+$('mk-add').onclick=async()=>{
+  const body={name:$('mk-name').value.trim(),x:$('mk-x').value,y:$('mk-y').value||64,z:$('mk-z').value,
+    color:$('mk-color').value,note:$('mk-note').value};
+  if(!body.name||body.x===''||body.z===''){alert('名字与 X/Z 必填');return}
+  const r=await fetch('/api/map/markers',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){alert(d.error||'失败');return}
+  if(d.bluemap&&!d.bluemap.applied){alert('已保存，但没写进地图：'+(d.bluemap.reason||''))}
+  $('mk-name').value='';$('mk-x').value='';$('mk-z').value='';$('mk-note').value='';
+  loadMap();
 };
 
 async function loadBackups(){

@@ -322,3 +322,79 @@ def test_share_rejects_garbage(tmp_path, bad):
     secret = share.load_secret(tmp_path)
     ok, _ = share.verify(secret, bad)
     assert not ok
+
+
+def test_marker_set_block_and_apply(tmp_path):
+    from hoshi.map import marker_set_block, write_markers
+    from hoshi.map.bluemap import write_config
+
+    root = tmp_path / "server"
+    (root / "world").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    write_config(root, data_dir, mc_version="1.20.1", accept_download=True)
+
+    marker = {"id": "abc", "name": "出生点", "x": 0, "y": 64, "z": 0, "color": "green", "note": "新人来这"}
+    block = marker_set_block([marker])
+    assert "hoshi-panel" in block and "assets/hoshi-green.svg" in block
+    assert "出生点" in block
+
+    target = write_markers(root, data_dir, [marker])
+    text = target.read_text(encoding="utf-8")
+    assert text.count("hoshi-panel") == 1
+    assert (data_dir / "bluemap" / "web" / "assets" / "hoshi-green.svg").exists()
+
+    # 再写一次不会叠两份
+    write_markers(root, data_dir, [marker])
+    again = target.read_text(encoding="utf-8")
+    assert again.count("hoshi-panel") == 1
+
+
+async def test_marker_api_writes_bluemap_config(tmp_path):
+    from hoshi.map.bluemap import write_config
+
+    app, instance = make_app(tmp_path)
+    write_config(instance.root, tmp_path / "data", mc_version="1.20.1", accept_download=True)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        created = await client.post(
+            "/api/map/markers",
+            json={"name": "矿洞", "x": 12, "z": -34, "color": "blue"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert created.status == 200
+        body = await created.json()
+        assert body["bluemap"]["applied"] is True
+        conf = (instance.root / "config" / "bluemap" / "maps" / "overworld.conf").read_text(encoding="utf-8")
+        assert "矿洞" in conf and "hoshi-blue.svg" in conf
+
+
+async def test_map_index_injects_overlay(tmp_path):
+    async def page(_request: web.Request) -> web.Response:
+        return web.Response(text="<html><body>map</body></html>", content_type="text/html")
+
+    upstream = web.Application()
+    upstream.router.add_get("/", page)
+    upstream.router.add_get("/index.html", page)
+    upstream_server = TestServer(upstream)
+    await upstream_server.start_server()
+
+    app, _ = make_app(tmp_path, upstream=f"http://127.0.0.1:{upstream_server.port}")
+    try:
+        async with TestClient(TestServer(app)) as client:
+            await login(client)
+            resp = await client.get("/map/")
+            html = await resp.text()
+            assert "/map-overlay.js" in html
+
+            js = await client.get("/map-overlay.js")
+            assert js.status == 200
+            assert "hoshi-players" in await js.text()
+    finally:
+        await upstream_server.close()
+
+
+async def test_overlay_requires_auth(tmp_path):
+    app, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as anon:
+        resp = await anon.get("/map-overlay.js")
+        assert resp.status == 401
