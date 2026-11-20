@@ -1,182 +1,177 @@
 # 星岚 / HoshiLauncher
 
-把 MCSL2 这类开服工具从桌面程序改写成「常驻服务 + 浏览器控制台」的个人向面板。单人使用，资源占用尽量小，能跑在 4 核 16 GB 的租用机上。
+在浏览器里管你的 Minecraft 服务器：启动、看日志、发命令、备份、装模组、看地图。一个程序，一个人用，常驻后台。
+
+不需要开着启动器窗口，也不用记一堆脚本参数。
 
 ## 引用与鸣谢 / Credits
 
 | 对象 | 作用 | 说明 |
 |---|---|---|
-| [MCSL2](https://github.com/MCSLTeam/MCSL2) | 上游基线 | © MCSL开发组，GPL-3.0。本仓库保留其许可与出处 |
-| [BlueMap](https://github.com/BlueMap-Minecraft/BlueMap) | 网页地图渲染 | MIT，bluecolored |
-| [CreateTrainWebAPI](https://github.com/BeneHenke/CreateTrainWebAPI) | Create 列车与轨道数据 | MIT，BeneHenke |
+| [MCSL2](https://github.com/MCSLTeam/MCSL2) | 项目起点 | © MCSL开发组，GPL-3.0 |
+| [BlueMap](https://github.com/BlueMap-Minecraft/BlueMap) | 网页地图 | MIT，bluecolored |
+| [CreateTrainWebAPI](https://github.com/BeneHenke/CreateTrainWebAPI) | Create 列车数据 | MIT，BeneHenke |
 | [Create BlueMap](https://github.com/Szedann/create-bluemap) | 备选列车渲染 | MIT，Szedann |
-| [AstrBot](https://github.com/AstrBotDevs/AstrBot) | QQ bot 插件宿主 | AGPL-3.0 |
+| [AstrBot](https://github.com/AstrBotDevs/AstrBot) | QQ 机器人框架 | AGPL-3.0 |
 | [Create](https://github.com/Creators-of-Create/Create) | 列车数据来源 | MIT |
-| [Modrinth API](https://docs.modrinth.com) | 模组元数据与侧别判定 | 服务条款 |
+| [Modrinth](https://docs.modrinth.com) | 模组信息查询 | 服务条款 |
 | [BMCLAPI](https://bmclapi2.bangbang93.com) | Minecraft 资源镜像 | bangbang93 维护 |
-| [psutil](https://github.com/giampaolo/psutil) | 进程与主机指标 | BSD-3-Clause |
-| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 界面等宽字体 | SIL OFL 1.1，全文见 `LICENSES/` |
+| [psutil](https://github.com/giampaolo/psutil) | 内存与 CPU 读取 | BSD-3-Clause |
+| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 界面字体 | SIL OFL 1.1，全文见 `LICENSES/` |
 | [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) | 字体图标补丁 | 字体 OFL 1.1，脚本 MIT |
-| Python、aiohttp、segno | 运行时、HTTP、二维码 | PSF、Apache-2.0、BSD |
+| Python、aiohttp、segno | 运行时、网页服务、二维码 | PSF、Apache-2.0、BSD |
 
 ## AI 生成警告 / AI Notice
 
-> **本仓库的文档与代码主要由 AI 协助生成与整理。**
+> **这个项目的文档和代码主要由 AI 协助写成。**
 >
-> - 可能存在事实错误、版本漂移、参数记错，尤其涉及具体行号、命令输出、第三方接口字段的部分。
-> - 项目仍在开发中，接口、配置项、目录结构随时会变。
-> - 不要把这里的内容当成权威结论；动手前请对照上游源码、官方文档与你自己的实测。
-> - 任何涉及公网暴露、删除数据、改服务器配置的操作，先在测试环境验证。
+> - 可能有事实错误、版本对不上、参数记错。
+> - 功能还在增加，界面和配置项会变。
+> - 动手前请对照官方文档和你自己的实际情况，重要操作先备份。
 
-English: **Documents and code here are largely AI-generated.** Expect factual errors, version drift and outdated API details. Verify against upstream sources before relying on anything, and never run destructive steps without a backup.
+English: **Documents and code here are largely AI-generated.** Expect factual errors and outdated details. Verify before relying on anything, and back up before destructive steps.
 
-## 现在是什么状态
+## 你能用它做什么
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| R0 | 配置 schema、TOML 读写、CLI、SQLite、健康检查 | 已完成 |
-| R1 | 实例模型、Java 探测、进程守护、WebSocket 控制台、登录 | 已完成 |
-| R2 | 设置页、公网三档、TOTP 与二维码、限速、审计页、改密码、命令白名单 | 已完成 |
-| R3 | 文件、备份、导出导入、整合包导入、模组、属性编辑、迁移、bot、诊断 | 已完成 |
-| R4 | 地图、玩家层、标记、分享链接 | 已完成 |
-| R5 | 打包、系统服务、旧数据迁移、发布包 | 已完成 |
+### 开服与看服
 
-实测数据：
+- 把已经存在的服务端目录接管进来，文件不动。
+- 启动、停止、强杀；停止走 `stop`，世界正常存盘。
+- 实时控制台，日志会同时存到面板的数据目录，重启后还能翻。
+- 控制台只放行已知命令，避免手滑把服端搞崩。
 
-| 指标 | 值 |
-|---|---|
-| 测试 | 110 项通过，ruff 无告警 |
-| 面板空载 | RSS 44 MB，USS 24 MB，9 线程 |
-| 打包产物 | `hoshi.exe` 19.0 MB，整个目录 39.8 MB |
-| 发布包 | `hoshi-0.1.0-windows-x64.zip` 14.6 MB |
-| 香草纪元（400 模组 Forge） | 本机 125 秒；你的安装用 Java 17 实测 207 秒 |
+### 管理与迁移
 
-## 能做什么
+- 文件浏览与文本编辑，改 `server.properties` 会保留原来的注释并留一份备份。
+- 备份世界与配置，一键恢复；默认保留最近 10 份。
+- 导出成 zip 下载到本机，或把 zip 传上去覆盖。
+- 导入整合包 zip，自动识别 Forge、NeoForge 或原版，自动挑合适的 Java。
+- 换盘搬目录，带空间检查与失败回滚。
+- 每个服务器单独设 Java、内存、JVM 参数、编码。
 
-| 范围 | 能力 |
-|---|---|
-| 实例 | 接管已有目录、导入 zip 整合包并自动识别、迁移目录、每个实例单独设 Java 与内存 |
-| 进程 | 启动、停止、强杀，独立进程组，日志环形缓冲 2000 行并落盘 |
-| 控制台 | 实时 WebSocket、命令白名单三档（strict / extended / raw） |
-| 文件 | 目录浏览、文本在线编辑、`server.properties` 保序编辑（保留注释、自动 `.bak`） |
-| 备份 | 创建、列举、恢复、删除，默认保留 10 份，运行中拒绝恢复 |
-| 导入导出 | 流式导出 zip（store 不压缩）、安全解包导入、带进度条 |
-| 模组 | 列表、侧别判定（fabric / mods.toml / 内置名单 / Modrinth 反查）、一键启停 |
-| 安全 | 登录、TOTP（扫码 / 终端出码 / 恢复码）、登录限速锁定、审计页、CSRF、JVM 参数白名单、暴露三档 |
-| 地图 | BlueMap 配置生成（复用现有世界）、`/map/` 反代、RCON 玩家位置、标记写入地图配置、只读共享链接、玩家浮层 |
-| bot | 只读令牌、状态 / 玩家 / 事件接口、每群 10 次与每人 1 次限速、文案可配 |
-| 运维 | 崩溃诊断（九类模式）、快捷命令、审计与设置改动历史、旧 MCSL2 数据迁移 |
+### 模组
 
-## 目录结构
+- 列出 `mods/` 里的模组，标出「客户端专用」「两侧都要」「未知」。
+- 一键启用或停用，靠改后缀实现，服务端不受影响。
+- 在线查询模组信息，判断服务端到底需不需要装。
 
-```
-.
-├── README.md              本文件（中英对照）
-├── QUICKSTART.md          三分钟上手
-├── LICENSE                GPL-3.0 正文
-├── NOTICE.md              上游、第三方组件与改动记录
-├── LICENSES/              第三方许可全文（字体等）
-├── pyproject.toml         Python 工程
-├── src/hoshi/             服务端程序包（src 布局）
-│   ├── auth/              密码、TOTP、恢复码、限速、会话
-│   ├── instances/         实例、探测、进程、备份、迁移、诊断、属性
-│   ├── files/             路径安全与 zip
-│   ├── map/               BlueMap、RCON、玩家、标记、共享
-│   ├── mods/              jar 元数据与 Modrinth
-│   ├── bot/               只读接口与限速
-│   ├── security/          命令与 JVM 白名单、暴露档
-│   ├── web/               aiohttp 应用与页面
-│   ├── cli.py             命令行入口
-│   └── db.py              SQLite 与审计
-├── tests/                 单元与接口测试（110 项）
-├── packaging/             Nuitka 构建、systemd 单元、NSSM 脚本、发布打包
-├── docs/使用指南.md        给使用者的教程，仓库里唯一的文档
-├── evidence/              上游源码副本，本地保留，不入库
-├── notes/                 设计与决策笔记，本地保留，不入库
-└── archive/mcsl2-fork/    PyQt 版骨架，历史归档，不入库
-```
+### 地图
 
-`evidence/`、`notes/`、`archive/`、`dist/`、`release/` 都在 `.gitignore` 里。
+- 接 BlueMap，直接读你现有的世界文件，不复制不移动。
+- `/map/` 走面板访问，不用另外暴露端口。
+- 显示在线玩家位置（需要服端开 RCON）。
+- 在地图上加标记，写进 BlueMap 配置。
+- 生成只读共享链接，给朋友看，有有效期。
 
-## 快速开始
+### 安全
 
-用发布包（不需要 Python）：
+- 登录加两步验证：手机扫码、终端出码、一次性恢复码三种都行。
+- 连续登录失败会锁定；所有操作进审计，可查。
+- 对外暴露分三档，公网档必须开启两步验证并手写确认短语。
+- 防 CSRF、防跨站 WebSocket、限制 JVM 参数与命令。
+
+### 群里查状态
+
+给 QQ 机器人一个只读令牌，就能查在线人数、玩家名单、最近事件。每群每分钟限 10 次，每人 1 次。
+
+## 安装
+
+### 直接用发布包（不需要 Python）
 
 ```powershell
 .\hoshi.exe serve
 ```
 
-从源码：
+第一次启动会打印管理员密码，浏览器打开 `http://127.0.0.1:25566` 登录。
 
-```powershell
+### 从源码
+
+```bash
+git clone git@github.com:OverFlame/hoshi_panel.git
+cd hoshi_panel
 uv venv --python 3.12
-uv pip install -e ".[dev]"
-uv run python -m hoshi --init-config
-uv run python -m hoshi            # 默认 127.0.0.1:25566
-uv run pytest -q
-uv run ruff check .
+uv pip install -e .
+uv run python -m hoshi
 ```
 
-国内网络装依赖慢，可加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。
+## 需要什么
+
+| 项 | 要求 |
+|---|---|
+| 系统 | Windows 10 及以上，或 Linux |
+| 面板本身 | 发布包不需要装 Python；源码运行需要 Python 3.12 |
+| 服务器 | 已有一个能跑的服务端目录，带 Java |
+| Java 版本 | 1.20.5 与 1.21+ 用 21；1.18 到 1.20.4 用 17 到 21；更老的用 8 到 16 |
+| 资源占用 | 面板空载约 45 MB 内存，几乎不占 CPU |
 
 ## 文档
 
 | 文件 | 内容 |
 |---|---|
 | [QUICKSTART.md](QUICKSTART.md) | 三分钟跑起来 |
-| [docs/使用指南.md](docs/使用指南.md) | 完整使用手册：实例、控制台、文件、备份、模组、地图、bot、安全 |
-| [packaging/README.md](packaging/README.md) | 打包、systemd、NSSM、发布包、旧数据迁移 |
+| [docs/使用指南.md](docs/使用指南.md) | 完整手册：装、登录、接服务器、备份、模组、地图、安全、常见问题 |
+| [packaging/README.md](packaging/README.md) | 打包、开机自启 |
 
-## 已知边界
+## 现在还不能做什么
 
-| 项 | 现状 |
+| 项 | 说明 |
 |---|---|
-| 地图组件 | 不随仓库分发，需自备 BlueMap jar |
-| Create 列车实体 | 需要 CreateTrainWebAPI，暂未接入 |
-| 下载层 | 未实现「从零下载并安装整合包」，只支持接管已有目录与 zip 导入 |
-| 定时任务 | 未实现 |
-| 按实例的地图与模组设置 | 目前这些仍是全局配置，已列入下一批改造 |
+| 从零下载安装整合包 | 目前只能接管已有目录，或导入现成的 zip |
+| Create 列车显示在地图上 | 需要额外的第三方接口 |
+| 定时重启、定时备份 | 还没有 |
+| 给别人分配不同权限 | 单人使用，只有一个管理员 |
+| 地图与模组按服务器分开设置 | 目前是全局配置，下一版改成每个服务器单独设 |
 
-## 许可与分发
+## 许可
 
-GPL-3.0。分发二进制时请一并提供源码与 `NOTICE.md`。字体按 SIL OFL 1.1 分发，全文见 `LICENSES/OFL-1.1-JetBrainsMono.txt`。地图组件与 Minecraft 资源不在仓库内。
+GPL-3.0。把程序发给别人时，请同时提供源码与本文件。字体按 SIL OFL 1.1 分发，全文在 `LICENSES/`。Minecraft 游戏文件与 BlueMap 不在仓库里，请自备。
 
 ---
 
 # HoshiLauncher (English)
 
-A personal Minecraft server panel: one long-running service plus a browser UI. Single operator, small footprint, meant for a 4-core / 16 GB rented box.
+Manage your Minecraft server from a browser: start and stop it, read the console, send commands, take backups, manage mods, look at the map. One program, one operator, runs in the background.
 
 ## Credits
 
-Upstream MCSL2 is © MCSL开发组 under GPL-3.0. BlueMap and CreateTrainWebAPI are MIT, AstrBot is AGPL-3.0, psutil is BSD-3-Clause, JetBrains Mono and the Nerd Fonts patch are SIL OFL 1.1. See the table above and `LICENSES/`.
+MCSL2 is the starting point, © MCSL开发组 under GPL-3.0. BlueMap and CreateTrainWebAPI are MIT, AstrBot is AGPL-3.0, psutil is BSD-3-Clause, JetBrains Mono and the Nerd Fonts patch are SIL OFL 1.1. See the table above.
 
 ## AI Notice
 
-**Documents and code in this repo are largely AI-generated.** Expect factual errors, version drift and outdated API details. Verify against upstream sources, and back up before any destructive step.
+**Documents and code in this repo are largely AI-generated.** Expect factual errors and outdated details. Verify before relying on anything, and back up before destructive steps.
 
-## Status
+## What it does
 
-Phases R0 to R5 are complete: 110 tests pass, idle RSS 44 MB / USS 24 MB, the packaged build is a 39.8 MB directory, and a 400-mod Forge pack reaches `Done` in about two to three minutes.
+Adopt an existing server directory, start and stop it, watch the console live, send allowlisted commands, edit `server.properties`, take and restore backups, export and import zip archives, import modpack zips with automatic loader detection, migrate directories, toggle mods with side detection, and serve a BlueMap map with player positions, markers and read-only share links.
 
-## Features
+Login supports TOTP with a QR code, terminal codes or recovery codes. There is a login lockout, an audit log, CSRF protection and a command allowlist. A read-only token lets a QQ bot report status and players.
 
-Instance adoption and zip import, process supervision, live console with a command allowlist, file browser and `server.properties` editor, backups, streaming zip export, mod side detection via Modrinth, TOTP with QR and terminal codes, audit log, BlueMap configuration and reverse proxy, map markers, read-only share links, and a token-limited bot API.
+## Install
 
-## Layout
-
-`src/hoshi/` holds the package, `tests/` the suite, `docs/` a single user guide, `packaging/` the Nuitka build and service files. `evidence/`, `notes/` and `archive/` stay local and gitignored.
-
-## Quick start
+Release build, no Python needed:
 
 ```powershell
+.\hoshi.exe serve
+```
+
+From source:
+
+```bash
 uv venv --python 3.12
-uv pip install -e ".[dev]"
+uv pip install -e .
 uv run python -m hoshi
 ```
 
-Or use the release build: `hoshi.exe serve`.
+The panel idles around 45 MB of RAM. Use Java 21 for 1.20.5 and newer, Java 17 to 21 for 1.18 to 1.20.4.
+
+## Docs
+
+[QUICKSTART.md](QUICKSTART.md), [docs/使用指南.md](docs/使用指南.md) (Chinese user guide), [packaging/README.md](packaging/README.md).
+
+## Not there yet
+
+Installing a modpack from scratch, Create trains on the map, scheduled restarts and backups, multiple users with separate permissions, and per-server map settings.
 
 ## License
 
-GPL-3.0. Ship the source and `NOTICE.md` with any binary. Fonts are SIL OFL 1.1, full text in `LICENSES/`. Map components and Minecraft assets are not bundled.
+GPL-3.0. Ship the source with any binary. Fonts are SIL OFL 1.1, see `LICENSES/`. Minecraft assets and BlueMap are not bundled.
