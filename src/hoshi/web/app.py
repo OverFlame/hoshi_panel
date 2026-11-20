@@ -10,6 +10,7 @@ import contextlib
 import json
 import secrets
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +33,20 @@ from ..auth import (
 )
 from ..config import Config, save
 from ..db import log_setting, recent_audit, recent_settings, record
-from ..instances import InstanceNotFound, InstanceProcess, InstanceRegistry, probe, scan
+from ..files import INCLUDE_SETS, UnsafePath, resolve_within, safe_extract, stream_zip
+from ..instances import (
+    Instance,
+    InstanceNotFound,
+    InstanceProcess,
+    InstanceRegistry,
+    detect,
+    probe,
+    scan,
+)
+from ..instances.backup import BackupManager
 from ..security import commands, exposure, jvmargs
 from .audit_page import AUDIT_HTML
+from .index_page import INDEX_HTML
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
@@ -78,101 +90,6 @@ LOGIN_HTML = """<!doctype html>
 </body></html>
 """
 
-INDEX_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{app}}</title>
-<style>
- :root{color-scheme:dark}
- body{margin:0;font:14px/1.55 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
- header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid #23262d}
- header h1{font-size:1rem;margin:0;font-weight:600}
- .banner{padding:6px 18px;font-size:.82rem;background:#2a2013;color:#ffd28a;border-bottom:1px solid #3d2f16}
- .banner.local{background:#13221a;color:#8ff0c0;border-color:#1c3a2a}
- main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 96px)}
- aside{border-right:1px solid #23262d;overflow:auto;padding:10px}
- .inst{padding:10px;border:1px solid #23262d;border-radius:8px;margin-bottom:8px;cursor:pointer}
- .inst.active{border-color:#2f6fed}
- .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
- .state{font-size:.78rem;padding:1px 7px;border-radius:99px;background:#2a2f3a}
- .state.running{background:#17543b;color:#8ff0c0}
- .state.crashed{background:#5a1d1d;color:#ffb4b4}
- button{padding:4px 9px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer}
- button:hover{border-color:#2f6fed}
- section{display:flex;flex-direction:column;min-width:0}
- #console{flex:1;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0d11}
- #cmd{display:flex;gap:8px;padding:10px;border-top:1px solid #23262d}
- #cmd input{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
- .muted{opacity:.6}
- a{color:#8ab4ff}
-</style></head>
-<body>
-<header><h1>{{app}} <span class="muted">{{version}}</span></h1>
-<div><a href="/settings">设置</a> <a href="/audit">审计</a> <span class="muted">{{user}}</span> <button id="logout">退出</button></div></header>
-<div class="banner {{banner_class}}">{{banner}}</div>
-<main>
- <aside id="list"><p class="muted">加载中…</p></aside>
- <section>
-  <pre id="console"></pre>
-  <div id="cmd"><input id="text" placeholder="输入命令后回车（受白名单限制）" disabled>
-  <button id="send" disabled>发送</button></div>
- </section>
-</main>
-<script>
-const state={current:null, ws:null};
-const $=id=>document.getElementById(id);
-const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
-function badge(s){return `<span class="state ${s}">${s}</span>`}
-async function refresh(){
-  const r=await fetch('/api/instances'); if(!r.ok) return;
-  const data=await r.json(); const box=$('list'); box.innerHTML='';
-  if(!data.instances.length){box.innerHTML='<p class="muted">还没有实例。用命令行 hoshi instances add 添加。</p>';return}
-  for(const it of data.instances){
-    const div=document.createElement('div');
-    div.className='inst'+(state.current===it.id?' active':'');
-    div.innerHTML=`<div class="row"><b>${it.name}</b>${badge(it.state)}</div>
-      <div class="muted" style="font-size:.78rem">${it.directory}</div>
-      <div class="row" style="margin-top:6px">
-        <button data-act="start">启动</button><button data-act="stop">停止</button><button data-act="kill">强杀</button>
-      </div>`;
-    div.onclick=e=>{if(e.target.dataset.act)return;select(it.id)};
-    div.querySelectorAll('button').forEach(b=>b.onclick=async ev=>{
-      ev.stopPropagation();
-      const resp=await fetch(`/api/instances/${it.id}/${b.dataset.act}`,{method:'POST',headers:{'X-CSRF-Token':csrf}});
-      if(!resp.ok){const d=await resp.json().catch(()=>({}));alert(d.error||'操作失败')}
-      setTimeout(refresh,300);
-    });
-    box.appendChild(div);
-  }
-}
-async function select(id){
-  state.current=id; await refresh();
-  if(state.ws){state.ws.close();state.ws=null}
-  const r=await fetch(`/api/instances/${id}/log?lines=300`); const data=await r.json();
-  $('console').textContent=(data.lines||[]).join('\\n')+'\\n';
-  const proto=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(`${proto}//${location.host}/ws/console/${id}`);
-  state.ws=ws;
-  ws.onmessage=ev=>{
-    const m=JSON.parse(ev.data);
-    if(m.type==='snapshot'){$('console').textContent=m.lines.join('\\n')+'\\n'}
-    else if(m.type==='log'){$('console').textContent+=m.line+'\\n';$('console').scrollTop=$('console').scrollHeight}
-    else if(m.type==='state'||m.type==='exit'){refresh()}
-  };
-  ws.onopen=()=>{$('text').disabled=false;$('send').disabled=false};
-  ws.onclose=()=>{$('text').disabled=true;$('send').disabled=true};
-}
-async function send(){
-  const text=$('text').value.trim(); if(!text||!state.ws)return;
-  state.ws.send(JSON.stringify({type:'command',text,csrf})); $('text').value='';
-}
-$('send').onclick=send;
-$('text').addEventListener('keydown',e=>{if(e.key==='Enter')send()});
-$('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':csrf}});location.href='/login'};
-refresh(); setInterval(refresh,4000);
-</script>
-</body></html>
-"""
 
 SETTINGS_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -719,6 +636,270 @@ def create_app(
               result="ok" if result.get("ok") else "fail", detail=commands.normalize(text)[:60])
         return web.json_response(result, status=200 if result.get("ok") else 409)
 
+
+    # ---------- 文件 ----------
+
+    def instance_root(instance_id: str) -> Path:
+        return registry.get(instance_id).root
+
+    async def list_files(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        try:
+            root = instance_root(instance_id)
+        except InstanceNotFound:
+            return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        rel = request.query.get("path", "")
+        try:
+            target = resolve_within(root, rel)
+        except UnsafePath as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if not target.is_dir():
+            return web.json_response({"ok": False, "error": "不是目录"}, status=400)
+        entries = []
+        for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "name": item.name,
+                    "type": "dir" if item.is_dir() else "file",
+                    "size": stat.st_size,
+                    "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                }
+            )
+        return web.json_response({"path": rel, "entries": entries, "parent": str(Path(rel).parent) if rel else ""})
+
+    async def read_file(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        root = instance_root(instance_id)
+        rel = request.query.get("path", "")
+        try:
+            target = resolve_within(root, rel)
+        except UnsafePath as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if not target.is_file():
+            return web.json_response({"ok": False, "error": "文件不存在"}, status=404)
+        if target.stat().st_size > 1024 * 1024:
+            return web.json_response({"ok": False, "error": "文件过大，超过 1 MB"}, status=400)
+        raw = target.read_bytes()
+        if b"\x00" in raw[:4096]:
+            return web.json_response({"ok": False, "error": "二进制文件不可编辑"}, status=400)
+        return web.json_response({"path": rel, "content": raw.decode("utf-8", "replace"), "size": len(raw)})
+
+    async def write_file(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        root = instance_root(instance_id)
+        payload = await _read_payload(request)
+        rel = str(payload.get("path", ""))
+        content = str(payload.get("content", ""))
+        try:
+            target = resolve_within(root, rel)
+        except UnsafePath as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if target.is_dir():
+            return web.json_response({"ok": False, "error": "目标是目录"}, status=400)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        audit(request[SESSION_KEY].username, "file.write", target=rel, result="ok")
+        return web.json_response({"ok": True, "size": len(content)})
+
+    async def delete_file(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        root = instance_root(instance_id)
+        rel = request.query.get("path", "")
+        if not rel:
+            return web.json_response({"ok": False, "error": "不能删除实例根目录"}, status=400)
+        try:
+            target = resolve_within(root, rel)
+        except UnsafePath as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if not target.exists():
+            return web.json_response({"ok": False, "error": "不存在"}, status=404)
+        if target.is_dir():
+            if any(target.iterdir()):
+                return web.json_response({"ok": False, "error": "目录非空，先删里面的文件"}, status=400)
+            target.rmdir()
+        else:
+            target.unlink()
+        audit(request[SESSION_KEY].username, "file.delete", target=rel, result="ok")
+        return web.json_response({"ok": True})
+
+    # ---------- 导出与导入 ----------
+
+    async def export_zip(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        try:
+            instance = registry.get(instance_id)
+        except InstanceNotFound:
+            return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        raw = request.query.get("include", "world,config,mods")
+        includes: list[str] = []
+        for part in raw.split(","):
+            key = part.strip()
+            if key in INCLUDE_SETS:
+                includes.extend(INCLUDE_SETS[key])
+            elif key:
+                includes.append(key)
+        filename = f"{instance.name}-{time.strftime('%Y%m%d-%H%M')}.zip"
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "application/zip",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            }
+        )
+        await response.prepare(request)
+        total = 0
+        for chunk in stream_zip(instance.root, includes):
+            if chunk:
+                total += len(chunk)
+                await response.write(chunk)
+        await response.write_eof()
+        audit(request[SESSION_KEY].username, "export", target=instance_id, result="ok", detail=f"{total} bytes")
+        return response
+
+    async def import_zip(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        try:
+            instance = registry.get(instance_id)
+        except InstanceNotFound:
+            return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != "file":
+            return web.json_response({"ok": False, "error": "缺少 file 字段"}, status=400)
+        upload_dir = data_dir / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        temp = upload_dir / f"{uuid.uuid4().hex}.zip"
+        with temp.open("wb") as fh:
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                fh.write(chunk)
+        try:
+            skipped = safe_extract(temp, instance.root)
+        finally:
+            temp.unlink(missing_ok=True)
+        audit(request[SESSION_KEY].username, "import", target=instance_id, result="ok", detail=f"跳过 {len(skipped)}")
+        return web.json_response({"ok": True, "skipped": skipped})
+
+    # ---------- 备份 ----------
+
+    async def backups_create(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        payload = await _read_payload(request)
+        includes = payload.get("include") or ["world", "config", "mods"]
+        try:
+            entry = await asyncio.get_running_loop().run_in_executor(
+                None, backup_manager.create, instance, list(includes)
+            )
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        audit(request[SESSION_KEY].username, "backup", target=instance_id, result="ok", detail=entry.name)
+        return web.json_response({"ok": True, "backup": entry.to_dict()})
+
+    async def backups_list(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        items = [entry.to_dict() for entry in backup_manager.list(instance)]
+        return web.json_response({"backups": items, "retention": backup_manager.retention})
+
+    async def backups_restore(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        proc = current_app[PROCESSES_KEY].get(instance_id)
+        if proc is not None and proc.running:
+            return web.json_response({"ok": False, "error": "请先停止服务器再恢复"}, status=409)
+        name = request.match_info["name"]
+        try:
+            archive = backup_manager.restore(instance, name)
+        except FileNotFoundError:
+            return web.json_response({"ok": False, "error": "备份不存在"}, status=404)
+        skipped = await asyncio.get_running_loop().run_in_executor(
+            None, safe_extract, archive, instance.root
+        )
+        archive.unlink(missing_ok=True)
+        audit(request[SESSION_KEY].username, "restore", target=instance_id, result="ok", detail=name)
+        return web.json_response({"ok": True, "skipped": skipped})
+
+    async def backups_delete(request: web.Request) -> web.Response:
+        instance_id = request.match_info["id"]
+        instance = registry.get(instance_id)
+        name = request.match_info["name"]
+        try:
+            backup_manager.delete(instance, name)
+        except FileNotFoundError:
+            return web.json_response({"ok": False, "error": "备份不存在"}, status=404)
+        audit(request[SESSION_KEY].username, "backup.delete", target=instance_id, result="ok", detail=name)
+        return web.json_response({"ok": True})
+
+    # ---------- 整合包导入 ----------
+
+    async def import_pack(request: web.Request) -> web.Response:
+        reader = await request.multipart()
+        upload_dir = data_dir / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        temp = upload_dir / f"{uuid.uuid4().hex}.zip"
+        name_field = ""
+        uploaded = False
+        while True:
+            field = await reader.next()
+            if field is None:
+                break
+            if field.name == "name":
+                name_field = await field.text()
+            elif field.name == "file":
+                # multipart 的字段必须就地读完，留着稍后再读会拿到空内容
+                with temp.open("wb") as fh:
+                    while True:
+                        chunk = await field.read_chunk()
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                uploaded = True
+        if not uploaded:
+            return web.json_response({"ok": False, "error": "缺少 file 字段"}, status=400)
+
+        pack_name = (name_field or "").strip() or f"pack-{int(time.time())}"
+        servers_dir = Path(str(config.get("app.servers_dir"))).expanduser().resolve()
+        target = servers_dir / pack_name
+        if target.exists():
+            temp.unlink(missing_ok=True)
+            return web.json_response({"ok": False, "error": "目标目录已存在"}, status=409)
+
+        target.mkdir(parents=True, exist_ok=True)
+        skipped = await asyncio.get_running_loop().run_in_executor(None, safe_extract, temp, target)
+        temp.unlink(missing_ok=True)
+
+        detected = detect(target)
+        if not detected.ok:
+            return web.json_response(
+                {"ok": False, "error": "识别失败，需要手动添加实例", "path": str(target), "skipped": skipped},
+                status=422,
+            )
+        java = ""
+        found = await asyncio.get_running_loop().run_in_executor(None, scan)
+        if found:
+            java = found[0].path
+        instance = Instance.new(
+            name=pack_name,
+            directory=str(target),
+            launch_mode=detected.launch_mode,
+            jar=detected.jar,
+            args_file=detected.args_file,
+            user_jvm_args=detected.user_jvm_args,
+            java=java,
+            min_memory_mb=2048,
+            max_memory_mb=8192,
+        )
+        registry.add(instance)
+        audit(request[SESSION_KEY].username, "pack.import", target=instance.id, result="ok", detail=pack_name)
+        return web.json_response({"ok": True, "instance": instance.to_dict(), "skipped": skipped})
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -808,6 +989,7 @@ def create_app(
     app[DB_KEY] = db
     app[PENDING_KEY] = {}
     current_app = app
+    backup_manager = BackupManager(data_dir / "backups", retention=10)
 
     app.router.add_get("/login", login_page)
     app.router.add_post("/api/login", login_submit)
@@ -831,6 +1013,17 @@ def create_app(
     app.router.add_post("/api/instances/{id}/{action:start|stop|kill}", instance_action)
     app.router.add_get("/api/instances/{id}/log", instance_log)
     app.router.add_post("/api/instances/{id}/command", instance_command)
+    app.router.add_get("/api/instances/{id}/files", list_files)
+    app.router.add_get("/api/instances/{id}/file", read_file)
+    app.router.add_put("/api/instances/{id}/file", write_file)
+    app.router.add_delete("/api/instances/{id}/file", delete_file)
+    app.router.add_get("/api/instances/{id}/export", export_zip)
+    app.router.add_post("/api/instances/{id}/import", import_zip)
+    app.router.add_post("/api/instances/{id}/backup", backups_create)
+    app.router.add_get("/api/instances/{id}/backups", backups_list)
+    app.router.add_post("/api/instances/{id}/backups/{name}/restore", backups_restore)
+    app.router.add_delete("/api/instances/{id}/backups/{name}", backups_delete)
+    app.router.add_post("/api/packs/import", import_pack)
     app.router.add_get("/api/java", java_list)
     app.router.add_get("/api/java/probe", java_probe)
     app.router.add_get("/ws/console/{id}", ws_console)

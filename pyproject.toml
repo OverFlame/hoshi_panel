@@ -39,4 +39,5 @@ select = ["E", "F", "I", "W", "B", "UP"]
 # 内嵌 HTML/CSS/JS，行宽无意义
 "src/hoshi/web/app.py" = ["E501"]
 "src/hoshi/web/audit_page.py" = ["E501"]
+"src/hoshi/web/index_page.py" = ["E501"]
 
