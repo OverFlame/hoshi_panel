@@ -398,3 +398,73 @@ async def test_overlay_requires_auth(tmp_path):
     async with TestClient(TestServer(app)) as anon:
         resp = await anon.get("/map-overlay.js")
         assert resp.status == 401
+
+
+async def test_rcon_settings_api(tmp_path):
+    app, instance = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        got = await client.get(f"/api/instances/{instance.id}/rcon")
+        assert got.status == 200
+        body = await got.json()
+        assert body["port"] == "25575"
+
+        bad = await client.post(
+            f"/api/instances/{instance.id}/rcon",
+            json={"enabled": True, "port": 25575, "password": ""},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert bad.status == 400
+
+        ok = await client.post(
+            f"/api/instances/{instance.id}/rcon",
+            json={"enabled": True, "port": 25576, "password": "secret2"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert ok.status == 200
+        props = (instance.root / "server.properties").read_text(encoding="utf-8")
+        assert "enable-rcon=true" in props
+        assert "rcon.port=25576" in props
+        assert "rcon.password=secret2" in props
+
+
+async def test_map_install_from_mirror(tmp_path):
+    payload = b"fake-jar"
+
+    async def jar(_request: web.Request) -> web.Response:
+        return web.Response(body=payload, content_type="application/java-archive")
+
+    mirror = web.Application()
+    mirror.router.add_get("/bluemap-3.20-forge.jar", jar)
+    mirror_server = TestServer(mirror)
+    await mirror_server.start_server()
+
+    app, instance = make_app(tmp_path)
+    config = app[CONFIG_KEY]
+    config.set("map.download_mirror", f"http://127.0.0.1:{mirror_server.port}/bluemap-3.20-forge.jar")
+    try:
+        async with TestClient(TestServer(app)) as client:
+            csrf = await login(client)
+            resp = await client.post(
+                f"/api/instances/{instance.id}/map/install", headers={"X-CSRF-Token": csrf}
+            )
+            assert resp.status == 200, await resp.text()
+            job_id = (await resp.json())["job"]["id"]
+            done = await wait_job(client, job_id, timeout=15)
+            assert done["error"] == "", done
+            assert (instance.root / "mods" / "bluemap.jar").read_bytes() == payload
+    finally:
+        await mirror_server.close()
+
+
+async def wait_job(client, job_id: str, timeout: float = 15.0) -> dict:
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        resp = await client.get(f"/api/jobs/{job_id}")
+        data = await resp.json()
+        if data.get("finished"):
+            return data
+        await asyncio.sleep(0.05)
+    raise AssertionError("job 超时")

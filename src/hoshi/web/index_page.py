@@ -113,6 +113,7 @@ body{font-size:.85rem}
   <div class="pane" id="pane-map">
     <div class="toolbar">
       <button id="map-open">打开地图</button>
+      <button id="map-install">安装 BlueMap</button>
       <button id="map-share">生成共享链接</button>
       <button id="map-refresh">刷新</button>
       <span class="muted" id="map-status"></span>
@@ -127,6 +128,13 @@ body{font-size:.85rem}
       <button class="primary" id="mk-add">加标记</button>
     </div>
     <div id="players" class="muted" style="padding:0 10px"></div>
+    <div class="toolbar" style="flex-wrap:wrap;border-top:1px solid #1c1f26">
+      <span class="muted">RCON</span>
+      <input id="rcon-port" placeholder="端口" style="width:80px" value="25575">
+      <input id="rcon-pass" placeholder="密码" type="password" style="width:140px">
+      <button id="rcon-save">保存并连接</button>
+      <span class="muted" id="rcon-state"></span>
+    </div>
     <div id="markerlist" style="flex:1;overflow:auto;padding:0 10px 10px"></div>
   </div>
   <div class="pane" id="pane-settings">
@@ -291,6 +299,37 @@ async function loadMap(){
   }
 }
 $('map-refresh').onclick=loadMap;
+
+$('map-install').onclick=async()=>{
+  if(!state.current)return;
+  const r=await fetch(`/api/instances/${state.current}/map/install`,{method:'POST',headers:H});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'启动下载失败','error'); return }
+  toast('开始获取 BlueMap，可取消','info');
+  await pollJob(d.job.id, job=>{
+    if(job.error){ toast(job.error,'error'); return }
+    toast('BlueMap 已安装：'+(job.result&&job.result.jar||''),'ok');
+    loadMap();
+  });
+};
+
+async function loadRcon(){
+  if(!state.current)return;
+  const r=await fetch(`/api/instances/${state.current}/rcon`); if(!r.ok)return;
+  const d=await r.json();
+  $('rcon-port').value=d.port||25575;
+  $('rcon-state').textContent=d.enabled?('已开启 · '+(d.poller&&d.poller.connected?'已连接':'未连接')):'未开启';
+}
+$('rcon-save').onclick=async()=>{
+  if(!state.current)return;
+  const body={enabled:true,port:Number($('rcon-port').value),password:$('rcon-pass').value};
+  const r=await fetch(`/api/instances/${state.current}/rcon`,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'保存失败','error'); return }
+  toast('已写入 server.properties，重启服务器后生效','ok');
+  loadRcon();
+};
+loadRcon();
 $('map-open').onclick=()=>{location.href='/map/'};
 $('map-share').onclick=async()=>{
   const r=await fetch('/api/map/share',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:'{}'});

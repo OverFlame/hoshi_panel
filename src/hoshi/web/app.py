@@ -73,6 +73,7 @@ from ..map import (
     is_installed,
     load_secret,
 )
+from ..map import installer as bluemap_installer
 from ..map import (
     issue as issue_share,
 )
@@ -114,7 +115,7 @@ PUBLIC_PATHS = {"/login", "/api/login", "/api/health", "/favicon.ico"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 LOGIN_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-bs-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · {{app}}</title>
 <style>
@@ -144,7 +145,17 @@ body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 .card-body{padding:12px 14px}
 </style>
 <link rel="stylesheet" href="/assets/tabler.css">
-<link rel="stylesheet" href="/assets/custom.css"></head>
+<link rel="stylesheet" href="/assets/custom.css">
+<style>
+body{background:#0b0e13;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0}
+form{background:#151a22;border:1px solid #232a35;padding:26px;border-radius:12px;width:320px;box-shadow:0 12px 40px #0008}
+h1{font-size:1.05rem;margin:0 0 14px;color:#e6e6e6}
+label{display:block;margin:10px 0 4px;font-size:.82rem;color:#c9d1d9;opacity:1}
+input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6;font:inherit}
+button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.92rem;cursor:pointer}
+.err{color:#ff8a8a;margin-top:10px;font-size:.82rem;min-height:1em}
+.hint{color:#7d8695;font-size:.76rem;margin-top:8px}
+</style></head>
 <body>
 <form method="post" action="/api/login">
   <h1>{{app}} 登录</h1>
@@ -194,7 +205,17 @@ body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 .card-body{padding:12px 14px}
 </style>
 <link rel="stylesheet" href="/assets/tabler.css">
-<link rel="stylesheet" href="/assets/custom.css"></head>
+<link rel="stylesheet" href="/assets/custom.css">
+<style>
+body{background:#0b0e13;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0}
+form{background:#151a22;border:1px solid #232a35;padding:26px;border-radius:12px;width:320px;box-shadow:0 12px 40px #0008}
+h1{font-size:1.05rem;margin:0 0 14px;color:#e6e6e6}
+label{display:block;margin:10px 0 4px;font-size:.82rem;color:#c9d1d9;opacity:1}
+input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6;font:inherit}
+button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.92rem;cursor:pointer}
+.err{color:#ff8a8a;margin-top:10px;font-size:.82rem;min-height:1em}
+.hint{color:#7d8695;font-size:.76rem;margin-top:8px}
+</style></head>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
 <main>
@@ -1907,6 +1928,99 @@ def create_app(
         }
         return web.json_response(sampler.to_dict(processes))
 
+
+    # ---------- 地图：安装与 RCON ----------
+
+    async def map_install(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        detected = detect(instance.root)
+        mc_version = (detected.mc_version or "1.20.1").strip()
+        loader = (detected.loader or "forge").strip()
+        mirror = str(config.get("map.download_mirror") or "").strip()
+        job = jobs.create("bluemap-install")
+        jobs.update(job["id"], phase="准备中")
+
+        async def run() -> None:
+            try:
+                if mirror:
+                    filename = mirror.rstrip("/").split("/")[-1] or "bluemap.jar"
+                    dl = bluemap_installer.Download(url=mirror, filename=filename, source="mirror")
+                else:
+                    jobs.update(job["id"], phase="查询 Modrinth")
+                    dl = await bluemap_installer.resolve_modrinth(mc_version, loader)
+                if dl is None:
+                    jobs.finish(job["id"], error=f"Modrinth 上没有匹配的版本（{loader} {mc_version}）")
+                    return
+                jobs.update(job["id"], phase="下载中")
+                jar = await bluemap_installer.download(
+                    data_dir / "packages" / "bluemap",
+                    dl,
+                    progress=lambda done, total: jobs.update(
+                        job["id"], done=done, total=total, phase="下载中"
+                    ),
+                )
+                jobs.update(job["id"], phase="安装到实例")
+                target = install_jar(instance.root, jar)
+                result = write_bluemap_config(
+                    instance.root,
+                    data_dir,
+                    mc_version=mc_version,
+                    accept_download=bool(map_flag(instance, "map.accept_download")),
+                    threads=int(map_flag(instance, "map.render_threads")),
+                )
+                jobs.finish(
+                    job["id"],
+                    result={
+                        "jar": str(target),
+                        "asset": result.asset,
+                        "source": dl.source,
+                        "config_dir": str(result.config_dir),
+                    },
+                )
+                audit("system", "map.install", target=instance.id, result="ok", detail=dl.filename)
+            except Exception as exc:
+                jobs.finish(job["id"], error=str(exc))
+
+        asyncio.create_task(run())
+        return web.json_response({"ok": True, "job": jobs.get(job["id"]), "mc": mc_version, "loader": loader})
+
+    async def rcon_settings(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        path = instance.root / "server.properties"
+        props = Properties.load(path) if path.is_file() else Properties()
+        if request.method == "GET":
+            poller = pollers.get(instance.id)
+            return web.json_response(
+                {
+                    "enabled": props.get("enable-rcon", "false").lower() == "true",
+                    "port": props.get("rcon.port", "25575"),
+                    "password_set": bool(props.get("rcon.password", "")),
+                    "poller": poller.snapshot() if poller else None,
+                }
+            )
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        if proc is not None and proc.running:
+            return web.json_response({"ok": False, "error": "运行中只读，先停服再改"}, status=409)
+        payload = await _read_payload(request)
+        enable = bool(payload.get("enabled", True))
+        port = int(payload.get("port", 25575) or 25575)
+        password = str(payload.get("password", ""))
+        if port < 1 or port > 65535:
+            return web.json_response({"ok": False, "error": "端口不合法"}, status=400)
+        if enable and not password:
+            return web.json_response({"ok": False, "error": "开启 RCON 必须设密码"}, status=400)
+        props.set("enable-rcon", "true" if enable else "false")
+        props.set("rcon.port", str(port))
+        if password:
+            props.set("rcon.password", password)
+        backup = path.with_suffix(".properties.bak")
+        if path.is_file():
+            backup.write_bytes(path.read_bytes())
+        props.save(path)
+        audit(request[SESSION_KEY].username, "rcon.settings", target=instance.id, result="ok",
+              detail=f"enable={enable} port={port}")
+        return web.json_response({"ok": True, "hint": "重启服务器后生效"})
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -2109,6 +2223,8 @@ def create_app(
     app.router.add_get("/api/map/status", map_status)
     app.router.add_get("/api/map/players", map_players)
     app.router.add_post("/api/instances/{id}/map/markers/apply", map_apply_markers)
+    app.router.add_post("/api/instances/{id}/map/install", map_install)
+    app.router.add_route("*", "/api/instances/{id}/rcon", rcon_settings)
     app.router.add_post("/api/instances/{id}/map/poll", map_poll_start)
     app.router.add_route("*", "/api/map/markers", map_markers)
     app.router.add_get("/api/map/config", map_config)

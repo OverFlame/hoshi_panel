@@ -334,6 +334,15 @@ SCHEMA: tuple[Item, ...] = (
         restart=True,
     ),
     Item(
+        key="map.download_mirror",
+        kind="str",
+        default="",
+        label="BlueMap 下载镜像",
+        summary="留空走 Modrinth，填完整 URL 则直接下载这个地址",
+        why="国内访问 GitHub 或 Modrinth 慢时用，URL 要指向一个 jar 文件。",
+        group="地图",
+    ),
+    Item(
         key="map.upstream",
         kind="str",
         default="http://127.0.0.1:8100",
