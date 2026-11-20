@@ -37,3 +37,6 @@ tools/probes/
 *.tmp
 *.orig
 *.rej
+
+# 本地设计笔记：只留使用指南在仓库里
+notes/

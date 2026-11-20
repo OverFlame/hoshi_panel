@@ -25,13 +25,13 @@ conduct secondary development based on MCSL2.
   2. MSL-X, link: https://mslx.fun or https://github.com/MSLXTeam/MSL-X ;
 ```
 
-本仓库的 `LICENSE` 只保留 GPL-3.0 正文，上述条款在此记录，不改其内容。相关分析见 `docs/13-许可证与二次开发边界.md`。
+本仓库的 `LICENSE` 只保留 GPL-3.0 正文，上述条款在此记录，不改其内容。本仓库按 GPL-3.0 履行开源义务。
 
 ## 本项目的改动
 
-1. 从 PyQt5 桌面程序改写为常驻服务 + 浏览器控制台，见 `docs/14` 起。
-2. 实例模型增加启动方式抽象、下载层重写、模组侧别判定、目录迁移等，见 `docs/12`、`15`、`23`、`24`。
-3. 地图采用 BlueMap + CreateTrainWebAPI 组合，见 `docs/18`、`22`。
+1. 从 PyQt5 桌面程序改写为常驻服务 + 浏览器控制台。
+2. 实例模型增加启动方式抽象，下载层重写，模组侧别判定，目录迁移。
+3. 地图采用 BlueMap + CreateTrainWebAPI 组合。
 4. 面板界面、认证、配置系统均为新写，不沿用上游 Qt 代码。
 
 ## 第三方组件

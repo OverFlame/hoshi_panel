@@ -39,7 +39,7 @@ English: **Documents and code here are largely AI-generated.** Expect factual er
 | R4 | 地图、玩家层、标记、分享链接 | 未开始 |
 | R5 | 打包、自启、旧数据迁移、发布 | 未开始 |
 
-R0 实测：12 项测试通过，冷启动 573 ms，空载 USS 24.3 MB、RSS 43.9 MB。详见 `docs/28-R0实施记录.md`。
+R1 已完成：30 项测试通过，空载 USS 24 MB、RSS 44 MB；香草纪元服务端实测从点击到 `Done` 用 125 秒。
 
 ## 目录结构
 
@@ -55,12 +55,12 @@ R0 实测：12 项测试通过，冷启动 573 ms，空载 USS 24.3 MB、RSS 43.
 │   ├── cli.py             命令行入口
 │   └── db.py              SQLite 初始化与审计
 ├── tests/                 单元测试
-├── docs/                  分析与设计文档（01 到 28）
+├── docs/使用指南.md        给使用者的教程，仓库里唯一的文档
 ├── evidence/              上游源码副本，本地保留，不入库
 └── archive/mcsl2-fork/    PyQt 版骨架，历史归档，不入库
 ```
 
-`evidence/` 与 `archive/` 写入 `.gitignore`。前者是分析时克隆的上游源码，后者是被替换掉的桌面版骨架，两者都只在本机保留。
+上游解剖、选型与实施记录都是本地笔记，不随仓库分发。`evidence/`、`archive/`、`notes/` 都写入 `.gitignore`。
 
 ## 快速开始
 
@@ -81,20 +81,9 @@ uv run ruff check .
 
 国内网络装依赖可能卡住，可加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。
 
-## 文档索引
+## 文档
 
-| 范围 | 内容 |
-|---|---|
-| `docs/01` 到 `13` | 上游 MCSL2 的静态解剖：启动链路、进程控制、下载、Java 探测、插件、许可证 |
-| `docs/14` 到 `19` | 改写决策：目标、下载优化、安全要求、设置项、地图、选型与性能预算 |
-| `docs/20` | 使用指南（附给 AI 的机器可读附录） |
-| `docs/21` 到 `24` | 低配预算、地图组件获取、模组侧别、目录迁移 |
-| `docs/25` | 实施计划与顺序（R0 到 R5） |
-| `docs/26`、`27` | bot 查询与推送接口、AstrBot 插件写法 |
-| `docs/28` | R0 实施记录与实测数据 |
-| `docs/29` | 包命名、布局、仓库创建与发布 |
-| `docs/30` | 远程 zip 传输、就地接管现有目录、语言复核 |
-| `docs/31` | R1 实施记录：实例、进程、控制台与香草样例 |
+只有一份：[使用指南](docs/使用指南.md)。装好、登录、接管已有服务端目录、启停看日志，都在里面。
 
 ## 许可与分发
 
@@ -116,11 +105,11 @@ See the table above. Upstream MCSL2 is © MCSL开发组 under GPL-3.0; BlueMap a
 
 ## Status
 
-R0 (config schema, TOML, CLI, SQLite, health check) is done: 12 tests pass, cold start 573 ms, idle RSS 43.9 MB / USS 24.3 MB. R1 to R5 are not started. See `docs/25-实施计划与顺序.md`.
+R1 is done: 30 tests pass, idle RSS 44 MB / USS 24 MB, and a 400-mod Forge pack booted to `Done` in 125 s. R2 to R5 are not started.
 
 ## Layout
 
-`hoshi/` holds the Python package, `tests/` the unit tests, `docs/` the design notes. Investigation probes, `evidence/` and `archive/` are local-only and gitignored.
+`hoshi/` holds the Python package, `tests/` the unit tests, `docs/` a single user guide. Design notes, probes, `evidence/` and `archive/` stay local and gitignored.
 
 ## Quick start
 
