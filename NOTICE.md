@@ -50,6 +50,7 @@ conduct secondary development based on MCSL2.
 | psutil | 进程与主机指标（内存、CPU） | BSD-3-Clause | https://github.com/giampaolo/psutil |
 | JetBrains Mono | 界面等宽字体 | SIL OFL 1.1 | https://github.com/JetBrains/JetBrainsMono |
 | Nerd Fonts | 字体图标补丁（产出 JetBrainsMono Nerd Font） | 字体 OFL 1.1，补丁脚本 MIT | https://github.com/ryanoasis/nerd-fonts |
+| Tabler | 界面主题（预览中） | MIT | https://github.com/tabler/tabler |
 
 BlueMap 与 CreateTrainWebAPI 不随本仓库分发，由程序在导入实例时按版本矩阵拉取；若你把缓存目录一并分发，需同时附带它们的许可文件。
 

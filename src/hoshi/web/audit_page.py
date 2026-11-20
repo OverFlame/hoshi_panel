@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 AUDIT_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-bs-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>审计 · {{app}}</title>
 <style>
@@ -25,7 +25,13 @@ AUDIT_HTML = """<!doctype html>
  .muted{opacity:.6}
  a{color:#8ab4ff}
  input,select{background:#141821;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 8px}
-</style></head>
+</style><style>
+:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
+body{font-size:.85rem}
+.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
+.card-body{padding:12px 14px}
+</style>
+<link rel="stylesheet" href="/assets/tabler.css"></head>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 审计</h1><div><a href="/">返回</a></div></header>
 <main>
@@ -67,6 +73,13 @@ document.querySelectorAll('.tab[data-view]').forEach(t=>t.onclick=()=>{
 });
 $('reload').onclick=load;
 load();
+
+function unifyButtons(){
+  document.querySelectorAll('button').forEach(b=>{
+    if(!b.classList.contains('btn')){b.classList.add('btn','btn-sm')}
+  });
+}
+unifyButtons();
 </script>
 </body></html>
 """

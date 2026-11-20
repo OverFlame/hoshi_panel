@@ -4,7 +4,7 @@
 """
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-bs-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{app}} · {{instance_name}}</title>
 <style>
@@ -55,7 +55,13 @@ INDEX_HTML = r"""<!doctype html>
  #console .lv-leave{color:#ffb27a}
  #console .lv-panel{color:#8ab4ff}
  #console{font-family:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-</style></head>
+</style><style>
+:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
+body{font-size:.85rem}
+.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
+.card-body{padding:12px 14px}
+</style>
+<link rel="stylesheet" href="/assets/tabler.css"></head>
 <body>
 <header><h1><a href="/">← 概览</a> · {{instance_name}}</h1>
 <div style="display:flex;gap:10px;align-items:center">
@@ -563,6 +569,14 @@ $('import-pack').onclick=async(e)=>{
 };
 
 refresh(); setInterval(refresh,4000);
+
+function unifyButtons(){
+  document.querySelectorAll('button').forEach(b=>{
+    if(!b.classList.contains('btn')){b.classList.add('btn','btn-sm')}
+  });
+}
+new MutationObserver(unifyButtons).observe(document.body,{childList:true,subtree:true});
+unifyButtons();
 </script>
 </body></html>
 """

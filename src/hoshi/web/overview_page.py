@@ -1,7 +1,7 @@
 """概览页：整体状态与实例卡片，进来先看全局。"""
 
 OVERVIEW_HTML = r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-bs-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{app}}</title>
 <style>
@@ -39,7 +39,13 @@ OVERVIEW_HTML = r"""<!doctype html>
  .muted{color:#7d8695}
  .empty{color:#7d8695;font-size:.85rem;padding:18px 0}
  @media (max-width:900px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} .cols{grid-template-columns:1fr} }
-</style></head>
+</style><style>
+:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
+body{font-size:.85rem}
+.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
+.card-body{padding:12px 14px}
+</style>
+<link rel="stylesheet" href="/assets/tabler.css"></head>
 <body>
 <header>
   <h1>{{app}}</h1>
@@ -138,6 +144,14 @@ async function refreshAll(){
 }
 $('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:H});location.href='/login'};
 refreshAll(); setInterval(refreshAll,5000);
+
+function unifyButtons(){
+  document.querySelectorAll('button').forEach(b=>{
+    if(!b.classList.contains('btn')){b.classList.add('btn','btn-sm')}
+  });
+}
+new MutationObserver(unifyButtons).observe(document.body,{childList:true,subtree:true});
+unifyButtons();
 </script>
 </body></html>
 """

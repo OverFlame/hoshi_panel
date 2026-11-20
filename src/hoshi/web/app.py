@@ -95,6 +95,7 @@ from .audit_page import AUDIT_HTML
 from .font_css import FONT_FACE_CSS
 from .index_page import INDEX_HTML
 from .overview_page import OVERVIEW_HTML
+from .tabler_css import TABLER_CSS
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
@@ -124,7 +125,13 @@ LOGIN_HTML = """<!doctype html>
  button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.95rem;cursor:pointer}
  .err{color:#ff6b6b;margin-top:10px;font-size:.85rem;min-height:1em}
  .hint{opacity:.55;font-size:.78rem;margin-top:8px}
-</style></head>
+</style><style>
+:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
+body{font-size:.85rem}
+.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
+.card-body{padding:12px 14px}
+</style>
+<link rel="stylesheet" href="/assets/tabler.css"></head>
 <body>
 <form method="post" action="/api/login">
   <h1>{{app}} 登录</h1>
@@ -163,7 +170,13 @@ SETTINGS_HTML = """<!doctype html>
  .muted{opacity:.6}
  #msg{margin-top:12px;font-size:.85rem}
  a{color:#8ab4ff}
-</style></head>
+</style><style>
+:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
+body{font-size:.85rem}
+.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
+.card-body{padding:12px 14px}
+</style>
+<link rel="stylesheet" href="/assets/tabler.css"></head>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
 <main>
@@ -1875,6 +1888,13 @@ def create_app(
 
     # ---------- 其它 ----------
 
+    async def tabler_css(_: web.Request) -> web.Response:
+        return web.Response(
+            text=TABLER_CSS,
+            content_type="text/css",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     async def health(_: web.Request) -> web.Response:
         return web.json_response(
             {
@@ -1938,6 +1958,7 @@ def create_app(
     app.router.add_get("/i/{id}", instance_page)
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/api/health", health)
+    app.router.add_get("/assets/tabler.css", tabler_css)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", post_settings)
     app.router.add_get("/api/settings/history", settings_history)
