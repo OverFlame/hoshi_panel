@@ -65,6 +65,15 @@ class SessionStore:
         if token:
             self._sessions.pop(token, None)
 
+    def revoke_others(self, keep_token: str | None) -> int:
+        """改密码后踢掉其它会话，保留当前这一个。"""
+        if not keep_token:
+            return 0
+        dropped = [token for token in self._sessions if token != keep_token]
+        for token in dropped:
+            self._sessions.pop(token, None)
+        return len(dropped)
+
     def revoke_all(self) -> None:
         self._sessions.clear()
 

@@ -24,15 +24,17 @@ from ..auth import (
     consume_recovery,
     generate_recovery_codes,
     generate_secret,
+    hash_password,
     hash_recovery_codes,
     provisioning_uri,
     verify_password,
     verify_totp,
 )
 from ..config import Config, save
-from ..db import log_setting, recent_settings, record
+from ..db import log_setting, recent_audit, recent_settings, record
 from ..instances import InstanceNotFound, InstanceProcess, InstanceRegistry, probe, scan
 from ..security import commands, exposure, jvmargs
+from .audit_page import AUDIT_HTML
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
@@ -106,7 +108,7 @@ INDEX_HTML = """<!doctype html>
 </style></head>
 <body>
 <header><h1>{{app}} <span class="muted">{{version}}</span></h1>
-<div><a href="/settings">设置</a> <span class="muted">{{user}}</span> <button id="logout">退出</button></div></header>
+<div><a href="/settings">设置</a> <a href="/audit">审计</a> <span class="muted">{{user}}</span> <button id="logout">退出</button></div></header>
 <div class="banner {{banner_class}}">{{banner}}</div>
 <main>
  <aside id="list"><p class="muted">加载中…</p></aside>
@@ -198,8 +200,17 @@ SETTINGS_HTML = """<!doctype html>
  a{color:#8ab4ff}
 </style></head>
 <body>
-<header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a></div></header>
+<header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
 <main>
+<h2>改密码</h2>
+<div class="item">
+  <div class="top"><div><b>管理员密码</b> <span class="key">auth.password_hash</span></div></div>
+  <div class="why">改完会踢掉其它设备上的会话，当前这个保留。</div>
+  <div class="row"><input id="pw-old" type="password" placeholder="当前密码">
+  <input id="pw-new" type="password" placeholder="新密码，至少 8 位">
+  <button id="pw-save">保存</button></div>
+  <div id="pw-msg" class="muted"></div>
+</div>
 <h2>两步验证</h2>
 <div class="item">
   <div class="top"><div><b>登录动态码</b> <span class="key">auth.totp_enabled</span></div><div id="totp-state" class="tag">读取中</div></div>
@@ -299,6 +310,15 @@ document.getElementById('totp-disable').onclick=async()=>{
   const d=await r.json();
   if(!d.ok){alert(d.error||'失败');return}
   authStatus();
+};
+document.getElementById('pw-save').onclick=async()=>{
+  const old=document.getElementById('pw-old').value;
+  const nw=document.getElementById('pw-new').value;
+  const r=await fetch('/api/auth/password',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({old,new:nw})});
+  const d=await r.json();
+  const msg=document.getElementById('pw-msg');
+  msg.textContent=r.ok?('已更新密码，踢掉其它会话 '+d.sessions_revoked+' 个'):('失败：'+(d.error||''));
+  if(r.ok){document.getElementById('pw-old').value='';document.getElementById('pw-new').value=''}
 };
 authStatus();
 load();
@@ -445,6 +465,34 @@ def create_app(
             .replace("{{banner_class}}", "local" if str(config.get("web.exposure")) == "local" else "")
         )
         return web.Response(text=text, content_type="text/html")
+
+    async def audit_page(request: web.Request) -> web.Response:
+        return web.Response(text=AUDIT_HTML.replace("{{app}}", APP_NAME), content_type="text/html")
+
+    async def audit_list(request: web.Request) -> web.Response:
+        if db is None:
+            return web.json_response({"items": []})
+        limit = min(500, max(1, int(request.query.get("limit", 100))))
+        items = recent_audit(db, limit=limit, action=request.query.get("action", ""))
+        return web.json_response({"items": items})
+
+    async def change_password(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        payload = await _read_payload(request)
+        old = str(payload.get("old", ""))
+        new = str(payload.get("new", ""))
+        if not verify_password(old, str(config.get("auth.password_hash"))):
+            audit(session.username, "password", result="fail", detail="旧密码不正确")
+            return web.json_response({"ok": False, "error": "旧密码不正确"}, status=400)
+        if len(new) < 8:
+            return web.json_response({"ok": False, "error": "新密码至少 8 位"}, status=400)
+        if new == old:
+            return web.json_response({"ok": False, "error": "新密码不能与旧密码相同"}, status=400)
+        config.set("auth.password_hash", hash_password(new), "file")
+        persist()
+        dropped = sessions.revoke_others(request.cookies.get(COOKIE_NAME))
+        audit(session.username, "password", result="ok", detail=f"踢掉其它会话 {dropped} 个")
+        return web.json_response({"ok": True, "sessions_revoked": dropped})
 
     async def settings_page(request: web.Request) -> web.Response:
         text = SETTINGS_HTML.replace("{{app}}", APP_NAME)
@@ -776,6 +824,9 @@ def create_app(
     app.router.add_post("/api/auth/recovery/rotate", recovery_rotate)
     app.router.add_post("/api/auth/totp/enable", totp_enable)
     app.router.add_post("/api/auth/totp/disable", totp_disable)
+    app.router.add_post("/api/auth/password", change_password)
+    app.router.add_get("/audit", audit_page)
+    app.router.add_get("/api/audit", audit_list)
     app.router.add_get("/api/instances", list_instances)
     app.router.add_post("/api/instances/{id}/{action:start|stop|kill}", instance_action)
     app.router.add_get("/api/instances/{id}/log", instance_log)

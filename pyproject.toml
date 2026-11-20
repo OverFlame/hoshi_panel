@@ -38,4 +38,5 @@ select = ["E", "F", "I", "W", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # 内嵌 HTML/CSS/JS，行宽无意义
 "src/hoshi/web/app.py" = ["E501"]
+"src/hoshi/web/audit_page.py" = ["E501"]
 

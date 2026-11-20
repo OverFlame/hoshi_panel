@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -101,6 +101,33 @@ def recent_settings(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str,
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def recent_audit(
+    conn: sqlite3.Connection, limit: int = 100, action: str = ""
+) -> list[dict[str, object]]:
+    if action:
+        rows = conn.execute(
+            "SELECT ts, actor, action, target, result, detail FROM audit "
+            "WHERE action LIKE ? ORDER BY id DESC LIMIT ?",
+            (f"{action}%", limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT ts, actor, action, target, result, detail FROM audit ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def cleanup(conn: sqlite3.Connection, keep_days: int = 90) -> int:
+    """删除过旧审计，返回删除行数。"""
+    cutoff = (datetime.now(UTC).astimezone() - timedelta(days=keep_days)).isoformat(
+        timespec="seconds"
+    )
+    cursor = conn.execute("DELETE FROM audit WHERE ts < ?", (cutoff,))
+    conn.commit()
+    return cursor.rowcount or 0
 
 
 def _short(value: object) -> str:

@@ -17,6 +17,7 @@ from aiohttp import web
 from . import APP_NAME, VERSION
 from .auth.bootstrap import INITIAL_PASSWORD_FILE, ensure_admin
 from .config import Config, ConfigError, default_path, load, save
+from .db import cleanup as cleanup_audit
 from .db import get_meta, record
 from .db import init as init_db
 from .instances import Instance, InstanceError, InstanceRegistry, detect, probe, scan
@@ -128,6 +129,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     conn = init_db(data_dir / "hoshi.db")
     record(conn, actor="system", action="start", result="ok", detail=f"v{VERSION}")
+    removed = cleanup_audit(conn, keep_days=90)
+    if removed:
+        print(f"清理过期审计 {removed} 条")
 
     password = ensure_admin(config, data_dir)
     registry = InstanceRegistry(data_dir / "instances.json")

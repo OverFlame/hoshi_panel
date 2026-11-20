@@ -34,12 +34,12 @@ English: **Documents and code here are largely AI-generated.** Expect factual er
 |---|---|---|
 | R0 | 配置 schema、TOML 读写、CLI、SQLite、健康检查 | 已完成 |
 | R1 | 实例模型、Java 探测、进程守护、WebSocket 控制台、登录 | 已完成 |
-| R2 | 设置页、公网三档、TOTP 与二维码、限速、审计、命令白名单 | 核心已完成 |
+| R2 | 设置页、公网三档、TOTP 与二维码、限速、审计页、改密码、命令白名单 | 已完成 |
 | R3 | 参数编辑、导入、下载、模组管理、目录迁移、bot 接口 | 未开始 |
 | R4 | 地图、玩家层、标记、分享链接 | 未开始 |
 | R5 | 打包、自启、旧数据迁移、发布 | 未开始 |
 
-R1 已完成，R2 安全核心已落地：58 项测试通过，空载 USS 24 MB、RSS 44 MB；香草纪元服务端实测从点击到 `Done` 用 125 秒。
+R1、R2 已完成：62 项测试通过，空载 USS 24 MB、RSS 44 MB；香草纪元服务端实测从点击到 `Done` 用 125 秒。
 
 ## 目录结构
 
@@ -105,7 +105,7 @@ See the table above. Upstream MCSL2 is © MCSL开发组 under GPL-3.0; BlueMap a
 
 ## Status
 
-R1 is done and R2 security core landed: 58 tests pass, idle RSS 44 MB / USS 24 MB, and a 400-mod Forge pack booted to `Done` in 125 s. R2 to R5 are not started.
+R1 and R2 are done: 62 tests pass, idle RSS 44 MB / USS 24 MB, and a 400-mod Forge pack booted to `Done` in 125 s. R2 to R5 are not started.
 
 ## Layout
 

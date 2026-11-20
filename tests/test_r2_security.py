@@ -4,7 +4,7 @@
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from hoshi.auth import hash_password
+from hoshi.auth import hash_password, verify_password
 from hoshi.auth import throttle as throttle_mod
 from hoshi.auth.recovery import consume, generate_codes, hash_codes
 from hoshi.auth.totp import current_step, generate_secret, hotp, provisioning_uri, verify
@@ -372,3 +372,64 @@ def test_cli_totp_setup_without_app(tmp_path, capsys):
 
     assert main(["totp", "--config", str(path)]) == 0
     assert "当前动态码" in capsys.readouterr().out
+
+
+async def test_change_password(tmp_path):
+    app, config = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        bad = await client.post(
+            "/api/auth/password", json={"old": "nope", "new": "new-password"}, headers={"X-CSRF-Token": csrf}
+        )
+        assert bad.status == 400
+        short = await client.post(
+            "/api/auth/password", json={"old": PASSWORD, "new": "short"}, headers={"X-CSRF-Token": csrf}
+        )
+        assert short.status == 400
+        ok = await client.post(
+            "/api/auth/password",
+            json={"old": PASSWORD, "new": "new-password-123"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert ok.status == 200
+        assert verify_password("new-password-123", str(config.get("auth.password_hash")))
+
+
+async def test_audit_endpoint_records_login_and_password(tmp_path):
+    app, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        await client.post(
+            "/api/auth/password",
+            json={"old": PASSWORD, "new": "another-password"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        resp = await client.get("/api/audit?limit=50")
+        items = (await resp.json())["items"]
+        actions = {item["action"] for item in items}
+        assert "login" in actions
+        assert "password" in actions
+        page = await client.get("/audit")
+        assert page.status == 200
+        assert "操作审计" in await page.text()
+
+
+async def test_audit_filter(tmp_path):
+    app, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        await login(client)
+        resp = await client.get("/api/audit?action=login")
+        items = (await resp.json())["items"]
+        assert items and all(item["action"].startswith("login") for item in items)
+
+
+def test_audit_cleanup_removes_old_rows(tmp_path):
+    from hoshi import db as db_mod
+
+    conn = db_mod.init(tmp_path / "hoshi.db")
+    db_mod.record(conn, actor="old", action="login", result="ok")
+    conn.execute("UPDATE audit SET ts = '2000-01-01T00:00:00+08:00'")
+    conn.commit()
+    assert db_mod.cleanup(conn, keep_days=90) == 1
+    assert db_mod.recent_audit(conn) == []
+
