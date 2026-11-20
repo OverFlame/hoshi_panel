@@ -21,6 +21,7 @@ from .db import cleanup as cleanup_audit
 from .db import get_meta, record
 from .db import init as init_db
 from .instances import Instance, InstanceError, InstanceRegistry, detect, probe, scan
+from .instances.java import pick_for
 from .security import exposure as exposure_mod
 from .web import create_app
 
@@ -197,8 +198,9 @@ def cmd_instances(args: argparse.Namespace) -> int:
             if not found:
                 print("没有探测到 Java，请用 --java 指定", file=sys.stderr)
                 return 1
-            java = found[0].path
-            print(f"使用 Java: {java} ({found[0].version})")
+            chosen = pick_for(result.mc_version or "1.20.1", found) or found[0]
+            java = chosen.path
+            print(f"使用 Java: {java} ({chosen.version})")
         instance = Instance.new(
             name=args.name,
             directory=str(Path(args.directory).expanduser().resolve()),

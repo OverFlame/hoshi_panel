@@ -121,6 +121,38 @@ def candidates() -> list[str]:
     return unique
 
 
+# MC 版本 -> 可用的 Java 主版本区间。乱猜版本是崩溃的常见来源。
+JAVA_RANGES: tuple[tuple[str, int, int], ...] = (
+    ("1.21", 21, 25),
+    ("1.20.5", 21, 25),
+    ("1.20", 17, 21),
+    ("1.19", 17, 21),
+    ("1.18", 17, 21),
+    ("1.17", 16, 21),
+    ("1.16", 8, 16),
+    ("1.15", 8, 15),
+    ("1.12", 8, 8),
+)
+
+
+def required_majors(mc_version: str) -> tuple[int, int]:
+    """返回 (最小, 最大) 主版本；认不出就给 17 到 21。"""
+    text = str(mc_version or "").strip()
+    for prefix, low, high in JAVA_RANGES:
+        if text.startswith(prefix):
+            return low, high
+    return 17, 21
+
+
+def pick_for(mc_version: str, candidates: list[JavaInfo]) -> JavaInfo | None:
+    """按 MC 版本挑一个兼容的 Java，优先高版本但不越界。"""
+    low, high = required_majors(mc_version)
+    fitting = [item for item in candidates if low <= item.major <= high]
+    if fitting:
+        return max(fitting, key=lambda item: (item.major, item.version))
+    return None
+
+
 def scan(extra: list[str] | None = None) -> list[JavaInfo]:
     """探测所有候选，按版本从高到低排序。"""
     result: dict[str, JavaInfo] = {}

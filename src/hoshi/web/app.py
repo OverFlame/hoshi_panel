@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 import time
 import uuid
@@ -47,6 +48,7 @@ from ..db import (
 from ..files import INCLUDE_SETS, UnsafePath, resolve_within, safe_extract, stream_zip
 from ..instances import (
     Instance,
+    InstanceError,
     InstanceNotFound,
     InstanceProcess,
     InstanceRegistry,
@@ -56,8 +58,10 @@ from ..instances import (
 )
 from ..instances.backup import BackupManager
 from ..instances.diagnose import diagnose
+from ..instances.java import pick_for
 from ..instances.migrate import execute_migration, plan_migration
 from ..instances.properties import Properties
+from ..jobs import JobStore
 from ..map import (
     MarkerStore,
     PlayerPoller,
@@ -218,7 +222,33 @@ function render(){
     else if(it.kind==='list'){input=document.createElement('input');input.value=(it.value||[]).join(',');input.dataset.list='1'}
     else {input=document.createElement('input');input.value=it.value??'';input.type=it.secret?'password':'text'}
     input.dataset.key=it.key; input.dataset.kind=it.kind;
-    row.appendChild(input); div.appendChild(row); box.appendChild(div);
+    row.appendChild(input);
+    if(it.kind==='path'){
+      const btn=document.createElement('button'); btn.textContent='浏览';
+      btn.onclick=()=>{
+        const p=document.createElement('div');
+        p.style.cssText='position:fixed;inset:10% 25%;background:#12151b;border:1px solid #2c313a;border-radius:10px;padding:12px;z-index:40;display:flex;flex-direction:column';
+        p.innerHTML='<div class="row"><b>选择目录（服务器上的路径）</b><span class="muted" id="sp-cwd"></span></div>'
+          +'<div id="sp-list" style="flex:1;overflow:auto;margin-top:8px"></div>'
+          +'<div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px"><button data-x="cancel">取消</button><button class="primary" data-x="ok">选定</button></div>';
+        document.body.appendChild(p);
+        let cur='';
+        async function load(path){
+          const r=await fetch('/api/fs/list?path='+encodeURIComponent(path||'')); const d=await r.json();
+          if(!r.ok)return; cur=d.path||''; p.querySelector('#sp-cwd').textContent=cur||'（盘符）';
+          const list=p.querySelector('#sp-list'); list.innerHTML='';
+          for(const e of d.entries){
+            const row=document.createElement('div'); row.className='fitem'; row.textContent=e.name+'/';
+            row.onclick=()=>load(e.path); list.appendChild(row);
+          }
+        }
+        p.querySelector('[data-x=cancel]').onclick=()=>p.remove();
+        p.querySelector('[data-x=ok]').onclick=()=>{ input.value=cur; p.remove() };
+        load(input.value||'');
+      };
+      row.appendChild(btn);
+    }
+    div.appendChild(row); box.appendChild(div);
   }
 }
 async function load(){
@@ -896,12 +926,23 @@ def create_app(
                         {"ok": False, "error": f"超过上传上限 {limit // (1024 * 1024)} MB"}, status=413
                     )
                 fh.write(chunk)
+        job = jobs.create("zip-import", total=1)
         try:
-            skipped = safe_extract(temp, instance.root)
+            skipped = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: safe_extract(
+                    temp,
+                    instance.root,
+                    progress=lambda done, total: jobs.update(
+                        job["id"], done=done, total=total, phase="解压中"
+                    ),
+                ),
+            )
         finally:
             temp.unlink(missing_ok=True)
+        jobs.finish(job["id"], result={"skipped": skipped})
         audit(request[SESSION_KEY].username, "import", target=instance_id, result="ok", detail=f"跳过 {len(skipped)}")
-        return web.json_response({"ok": True, "skipped": skipped})
+        return web.json_response({"ok": True, "skipped": skipped, "job": jobs.get(job["id"])})
 
     # ---------- 备份 ----------
 
@@ -999,19 +1040,42 @@ def create_app(
             return web.json_response({"ok": False, "error": "目标目录已存在"}, status=409)
 
         target.mkdir(parents=True, exist_ok=True)
-        skipped = await asyncio.get_running_loop().run_in_executor(None, safe_extract, temp, target)
+        job = jobs.create("pack-import", total=1)
+        jobs.update(job["id"], phase="解压中")
+
+        def do_extract() -> list[str]:
+            return safe_extract(
+                temp,
+                target,
+                progress=lambda done, total: jobs.update(
+                    job["id"], done=done, total=total, phase="解压中"
+                ),
+            )
+
+        skipped = await asyncio.get_running_loop().run_in_executor(None, do_extract)
         temp.unlink(missing_ok=True)
+        jobs.update(job["id"], phase="识别中")
 
         detected = detect(target)
         if not detected.ok:
+            jobs.finish(job["id"], error="识别失败，需要手动添加实例")
             return web.json_response(
-                {"ok": False, "error": "识别失败，需要手动添加实例", "path": str(target), "skipped": skipped},
+                {
+                    "ok": False,
+                    "error": "识别失败，需要手动添加实例",
+                    "path": str(target),
+                    "skipped": skipped,
+                    "job": jobs.get(job["id"]),
+                },
                 status=422,
             )
         java = ""
         found = await asyncio.get_running_loop().run_in_executor(None, scan)
-        if found:
-            java = found[0].path
+        chosen = pick_for(detected.mc_version or "1.20.1", found)
+        if chosen is None and found:
+            chosen = found[0]
+        if chosen is not None:
+            java = chosen.path
         instance = Instance.new(
             name=pack_name,
             directory=str(target),
@@ -1024,8 +1088,17 @@ def create_app(
             max_memory_mb=8192,
         )
         registry.add(instance)
+        jobs.finish(job["id"], result={"instance": instance.to_dict(), "skipped": skipped})
         audit(request[SESSION_KEY].username, "pack.import", target=instance.id, result="ok", detail=pack_name)
-        return web.json_response({"ok": True, "instance": instance.to_dict(), "skipped": skipped})
+        return web.json_response(
+            {"ok": True, "instance": instance.to_dict(), "skipped": skipped, "job": jobs.get(job["id"])}
+        )
+
+    async def job_status(request: web.Request) -> web.Response:
+        job = jobs.get(request.match_info["id"])
+        if job is None:
+            return web.json_response({"ok": False, "error": "任务不存在"}, status=404)
+        return web.json_response(job)
 
 
     # ---------- 模组 ----------
@@ -1490,6 +1563,99 @@ def create_app(
         audit(request[SESSION_KEY].username, "map.share", target=instance_name, result="ok")
         return web.json_response({"ok": True, "url": f"/map/?t={token}", "ttl_hours": ttl // 3600})
 
+
+    # ---------- 单实例设置 ----------
+
+    UPDATE_FIELDS = (
+        "name",
+        "java",
+        "min_memory_mb",
+        "max_memory_mb",
+        "jvm_args",
+        "encoding",
+        "nogui",
+        "jar",
+        "args_file",
+        "user_jvm_args",
+    )
+
+    async def get_instance_settings(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        return web.json_response(instance.to_dict())
+
+    async def update_instance(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        proc = current_app[PROCESSES_KEY].get(instance.id)
+        if proc is not None and proc.running:
+            return web.json_response({"ok": False, "error": "运行中不能改设置，先停止"}, status=409)
+        payload = await _read_payload(request)
+        changed: list[str] = []
+        for key in UPDATE_FIELDS:
+            if key not in payload:
+                continue
+            value = payload[key]
+            if key in ("min_memory_mb", "max_memory_mb"):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    return web.json_response({"ok": False, "error": f"{key} 需要整数"}, status=400)
+            elif key == "jvm_args":
+                if isinstance(value, str):
+                    value = [item for item in value.replace(",", " ").split() if item]
+                if not isinstance(value, list):
+                    return web.json_response({"ok": False, "error": "jvm_args 需要列表"}, status=400)
+                value = [str(item) for item in value]
+            elif key == "nogui":
+                value = bool(value)
+            else:
+                value = str(value)
+            if getattr(instance, key) != value:
+                setattr(instance, key, value)
+                changed.append(key)
+        try:
+            instance.validate()
+        except InstanceError as exc:
+            registry.load()
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        if changed:
+            registry.update(instance)
+            audit(request[SESSION_KEY].username, "instance.update", target=instance.id, result="ok",
+                  detail=", ".join(changed))
+        return web.json_response({"ok": True, "changed": changed, "instance": instance.to_dict()})
+
+    # ---------- 目录浏览 ----------
+
+    async def fs_list(request: web.Request) -> web.Response:
+        import string
+
+        raw = request.query.get("path", "")
+        if not raw:
+            if os.name == "nt":
+                drives = [f"{letter}:\\" for letter in string.ascii_uppercase if Path(f"{letter}:\\").exists()]
+                return web.json_response({"path": "", "entries": [{"name": d, "path": d} for d in drives], "parent": ""})
+            return web.json_response(
+                {"path": "/", "entries": [{"name": "/", "path": "/"}], "parent": ""}
+            )
+        target = Path(raw).expanduser()
+        if not target.is_dir():
+            return web.json_response({"ok": False, "error": "目录不存在"}, status=404)
+        entries = []
+        try:
+            children = sorted(target.iterdir(), key=lambda p: p.name.lower())
+        except OSError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        want_files = request.query.get("files") == "1"
+        suffix = request.query.get("suffix", "")
+        for child in children:
+            try:
+                if child.is_dir():
+                    entries.append({"name": child.name, "path": str(child), "type": "dir"})
+                elif want_files and (not suffix or child.suffix.lower() == suffix.lower()):
+                    entries.append({"name": child.name, "path": str(child), "type": "file"})
+            except OSError:
+                continue
+        return web.json_response({"path": str(target), "entries": entries, "parent": str(target.parent)})
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -1580,6 +1746,7 @@ def create_app(
     app[PENDING_KEY] = {}
     current_app = app
     backup_manager = BackupManager(data_dir / "backups", retention=10)
+    jobs = JobStore()
     markers = MarkerStore(data_dir / "markers")
     pollers: dict[str, PlayerPoller] = {}
     map_session: aiohttp.ClientSession | None = None
@@ -1613,6 +1780,10 @@ def create_app(
     app.router.add_get("/audit", audit_page)
     app.router.add_get("/api/audit", audit_list)
     app.router.add_get("/api/instances", list_instances)
+    app.router.add_get("/api/instances/{id}/settings", get_instance_settings)
+    app.router.add_patch("/api/instances/{id}", update_instance)
+    app.router.add_get("/api/fs/list", fs_list)
+    app.router.add_get("/api/jobs/{id}", job_status)
     app.router.add_post("/api/instances/{id}/{action:start|stop|kill}", instance_action)
     app.router.add_get("/api/instances/{id}/log", instance_log)
     app.router.add_post("/api/instances/{id}/command", instance_command)

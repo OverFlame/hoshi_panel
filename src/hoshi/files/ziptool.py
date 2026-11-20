@@ -122,12 +122,19 @@ def stream_zip(
         temp_path.unlink(missing_ok=True)
 
 
-def safe_extract(archive_path: Path, destination: Path) -> list[str]:
-    """解包到目标目录，拒绝越界路径与符号链接，返回跳过的条目。"""
+def safe_extract(archive_path: Path, destination: Path, progress=None) -> list[str]:
+    """解包到目标目录，拒绝越界路径与符号链接，返回跳过的条目。
+
+    progress(done, total) 可选，用来给界面报进度。
+    """
     destination.mkdir(parents=True, exist_ok=True)
     skipped: list[str] = []
     with zipfile.ZipFile(archive_path) as archive:
-        for info in archive.infolist():
+        entries = archive.infolist()
+        total = len(entries)
+        for index, info in enumerate(entries, start=1):
+            if progress is not None and index % 20 == 0:
+                progress(index, total)
             name = info.filename
             if name.endswith("/"):
                 continue
@@ -146,6 +153,8 @@ def safe_extract(archive_path: Path, destination: Path) -> list[str]:
                     if not chunk:
                         break
                     dst.write(chunk)
+        if progress is not None:
+            progress(total, total)
     return skipped
 
 

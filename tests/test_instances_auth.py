@@ -145,3 +145,22 @@ def test_decode_line_handles_mixed_encodings():
     assert decode_line("新".encode("gb18030")) == "新"
     assert decode_line("路径 D:\\\\MC\\\\香草".encode("gb18030")) == "路径 D:\\\\MC\\\\香草"
     assert "\ufffd" in decode_line(b"\xff\xfe\x00bad")
+
+
+def test_java_range_and_pick():
+    from hoshi.instances.java import JavaInfo, pick_for, required_majors
+
+    assert required_majors("1.20.1") == (17, 21)
+    assert required_majors("1.21.4") == (21, 25)
+    assert required_majors("1.16.5") == (8, 16)
+
+    candidates = [
+        JavaInfo(path="jdk25", version="25"),
+        JavaInfo(path="jdk21", version="21.0.9"),
+        JavaInfo(path="jdk17", version="17.0.16"),
+        JavaInfo(path="jdk8", version="1.8.0_51"),
+    ]
+    assert pick_for("1.20.1", candidates).path == "jdk21"
+    assert pick_for("1.16.5", candidates).path == "jdk8"
+    assert pick_for("1.21.4", candidates).path == "jdk25"
+    assert pick_for("1.20.1", [JavaInfo(path="jdk25", version="25")]) is None

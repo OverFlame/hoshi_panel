@@ -39,7 +39,7 @@ English: **Documents and code here are largely AI-generated.** Expect factual er
 | R4 | 地图、玩家层、标记、分享链接 | 已完成（Create 列车实体留待第三方 API） |
 | R5 | 打包、自启、旧数据迁移、发布 | 未开始 |
 
-R1 到 R5 全部完成：106 项测试通过，空载 USS 24 MB、RSS 44 MB；香草纪元服务端实测从点击到 `Done` 用 125 秒。
+R1 到 R5 全部完成，实机反馈修复：110 项测试通过，空载 USS 24 MB、RSS 44 MB；香草纪元服务端实测从点击到 `Done` 用 125 秒。
 
 ## 目录结构
 
@@ -107,7 +107,7 @@ See the table above. Upstream MCSL2 is © MCSL开发组 under GPL-3.0; BlueMap a
 
 ## Status
 
-R1 to R5 are done: 106 tests pass, idle RSS 44 MB / USS 24 MB, and a 400-mod Forge pack booted to `Done` in 125 s. R2 to R5 are not started.
+R1 to R5 are done, with field fixes: 110 tests pass, idle RSS 44 MB / USS 24 MB, and a 400-mod Forge pack booted to `Done` in 125 s. R2 to R5 are not started.
 
 ## Layout
 

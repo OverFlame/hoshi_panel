@@ -272,3 +272,59 @@ async def test_quick_commands(tmp_path):
         resp = await client.get("/api/commands")
         commands = (await resp.json())["commands"]
         assert any(item["command"] == "stop" and item["confirm"] for item in commands)
+
+
+async def test_instance_settings_patch(tmp_path):
+    app, _, registry, instance, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        got = await client.get(f"/api/instances/{instance.id}/settings")
+        assert got.status == 200
+        body = await got.json()
+        assert body["max_memory_mb"] == 512
+
+        patched = await client.patch(
+            f"/api/instances/{instance.id}",
+            json={
+                "java": "C:/Java/jdk17/bin/java.exe",
+                "max_memory_mb": 4096,
+                "jvm_args": "-XX:+UseG1GC -Xss1M",
+            },
+            headers=h(csrf),
+        )
+        assert patched.status == 200, await patched.text()
+        saved = registry.get(instance.id)
+        assert saved.max_memory_mb == 4096
+        assert saved.jvm_args == ["-XX:+UseG1GC", "-Xss1M"]
+        assert saved.java.endswith("java.exe")
+
+
+async def test_instance_settings_rejects_bad_jvm(tmp_path):
+    app, _, _, instance, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        resp = await client.patch(
+            f"/api/instances/{instance.id}",
+            json={"jvm_args": "-javaagent:/tmp/x.jar"},
+            headers=h(csrf),
+        )
+        assert resp.status == 400
+
+
+async def test_fs_list(tmp_path):
+    app, _, _, _, root = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        await login(client)
+        drives = await client.get("/api/fs/list")
+        assert drives.status == 200
+        assert "entries" in await drives.json()
+
+        listing = await client.get(f"/api/fs/list?path={root}")
+        body = await listing.json()
+        names = {entry["name"] for entry in body["entries"]}
+        assert "mods" in names
+        assert all(entry["type"] == "dir" for entry in body["entries"])
+
+        with_files = await client.get(f"/api/fs/list?path={root}&files=1&suffix=.jar")
+        names2 = {entry["name"] for entry in (await with_files.json())["entries"]}
+        assert "server.jar" in names2

@@ -9,12 +9,13 @@ INDEX_HTML = """<!doctype html>
 <title>{{app}}</title>
 <style>
  :root{color-scheme:dark}
- body{margin:0;font:14px/1.55 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
+ html,body{height:100%}
+ body{margin:0;display:flex;flex-direction:column;height:100vh;overflow:hidden;font:14px/1.55 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
  header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid #23262d}
  header h1{font-size:1rem;margin:0;font-weight:600}
  .banner{padding:6px 18px;font-size:.82rem;background:#2a2013;color:#ffd28a;border-bottom:1px solid #3d2f16}
  .banner.local{background:#13221a;color:#8ff0c0;border-color:#1c3a2a}
- main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 96px)}
+ main{display:grid;grid-template-columns:300px 1fr;flex:1;min-height:0}
  aside{border-right:1px solid #23262d;overflow:auto;padding:10px}
  .inst{padding:10px;border:1px solid #23262d;border-radius:8px;margin-bottom:8px;cursor:pointer}
  .inst.active{border-color:#2f6fed}
@@ -25,13 +26,13 @@ INDEX_HTML = """<!doctype html>
  button{padding:4px 9px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
  button:hover{border-color:#2f6fed}
  button.primary{background:#2f6fed;border-color:#2f6fed}
- section{display:flex;flex-direction:column;min-width:0}
+ section{display:flex;flex-direction:column;min-width:0;min-height:0}
  .tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid #23262d}
  .tab{padding:4px 10px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
  .tab.active{border-color:#2f6fed;background:#182338}
- .pane{flex:1;min-height:0;display:none;flex-direction:column}
+ .pane{flex:1;min-height:0;display:none;flex-direction:column;overflow:hidden}
  .pane.active{display:flex}
- #console{flex:1;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0d11}
+ #console{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0d11}
  #cmd{display:flex;gap:8px;padding:10px;border-top:1px solid #23262d}
  #cmd input{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
  .toolbar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #23262d;font-size:.85rem}
@@ -56,6 +57,12 @@ INDEX_HTML = """<!doctype html>
   <button id="logout">退出</button>
 </div></header>
 <div class="banner {{banner_class}}">{{banner}}</div>
+<div id="progress" style="display:none;padding:6px 18px;background:#101821;border-bottom:1px solid #23262d;font-size:.82rem">
+  <span id="progress-text"></span>
+  <div style="height:6px;background:#1c222c;border-radius:99px;margin-top:4px;overflow:hidden">
+    <div id="progress-bar" style="height:100%;width:0;background:#2f6fed;transition:width .2s"></div>
+  </div>
+</div>
 <main>
  <aside id="list"><p class="muted">加载中…</p></aside>
  <section>
@@ -107,6 +114,28 @@ INDEX_HTML = """<!doctype html>
   </div>
  </section>
 </main>
+<div id="insset" style="position:fixed;inset:8% 18%;background:#12151b;border:1px solid #2c313a;border-radius:10px;padding:14px;display:none;z-index:30;overflow:auto">
+  <div class="row"><b>实例设置</b><span class="muted" id="insset-name"></span></div>
+  <div class="row" style="margin-top:10px"><label class="muted" style="width:110px">Java 路径</label>
+    <input id="is-java" style="flex:1"><button id="is-java-browse">浏览</button></div>
+  <div class="row" style="margin-top:8px"><label class="muted" style="width:110px">最小内存 MB</label><input id="is-min" type="number" style="width:120px">
+    <label class="muted" style="width:110px">最大内存 MB</label><input id="is-max" type="number" style="width:120px"></div>
+  <div class="row" style="margin-top:8px"><label class="muted" style="width:110px">JVM 参数</label><input id="is-jvm" style="flex:1" placeholder="空格分隔，受白名单限制"></div>
+  <div class="row" style="margin-top:8px"><label class="muted" style="width:110px">编码</label>
+    <select id="is-enc"><option>utf-8</option><option>gb18030</option></select>
+    <label class="muted"><input type="checkbox" id="is-nogui"> nogui</label></div>
+  <div class="row" style="margin-top:8px"><label class="muted" style="width:110px">核心 / 参数文件</label>
+    <input id="is-core" style="flex:1" placeholder="jar 文件名或 args 相对路径"></div>
+  <div class="row" style="margin-top:14px;justify-content:flex-end;gap:8px">
+    <span class="muted" id="is-msg"></span>
+    <button id="is-cancel">取消</button><button class="primary" id="is-save">保存</button></div>
+</div>
+<div id="picker" style="position:fixed;inset:10% 25%;background:#12151b;border:1px solid #2c313a;border-radius:10px;padding:12px;display:none;z-index:40;flex-direction:column">
+  <div class="row"><b id="picker-title">选择目录</b><span class="muted" id="picker-cwd"></span></div>
+  <div class="row" style="margin:8px 0"><button id="picker-up">上一级</button><span class="muted" id="picker-hint"></span></div>
+  <div id="picker-list" style="flex:1;overflow:auto;min-height:0"></div>
+  <div class="row" style="justify-content:flex-end;gap:8px"><button id="picker-cancel">取消</button><button class="primary" id="picker-ok">选定当前目录</button></div>
+</div>
 <div id="editor">
   <div class="row"><b id="editor-title">编辑</b></div>
   <textarea id="editor-body" spellcheck="false"></textarea>
@@ -130,11 +159,12 @@ async function refresh(){
     div.innerHTML=`<div class="row"><b>${it.name}</b>${badge(it.state)}</div>
       <div class="muted" style="font-size:.78rem">${it.directory}</div>
       <div class="row" style="margin-top:6px">
-        <button data-act="start">启动</button><button data-act="stop">停止</button><button data-act="kill">强杀</button>
+        <button data-act="start">启动</button><button data-act="stop">停止</button><button data-act="kill">强杀</button><button data-act="config">设置</button>
       </div>`;
     div.onclick=e=>{if(e.target.dataset.act)return;select(it.id)};
     div.querySelectorAll('button').forEach(b=>b.onclick=async ev=>{
       ev.stopPropagation();
+      if(b.dataset.act==='config'){ openInstanceSettings(it); return }
       const resp=await fetch(`/api/instances/${it.id}/${b.dataset.act}`,{method:'POST',headers:H});
       if(!resp.ok){const d=await resp.json().catch(()=>({}));alert(d.error||'操作失败')}
       setTimeout(refresh,300);
@@ -254,6 +284,81 @@ $('mk-add').onclick=async()=>{
   if(d.bluemap&&!d.bluemap.applied){alert('已保存，但没写进地图：'+(d.bluemap.reason||''))}
   $('mk-name').value='';$('mk-x').value='';$('mk-z').value='';$('mk-note').value='';
   loadMap();
+};
+
+// ---------- 进度条 ----------
+function showProgress(text, pct){
+  const box=$('progress'); box.style.display='block';
+  $('progress-text').textContent=text;
+  $('progress-bar').style.width=(pct>=0?pct:0)+'%';
+}
+function hideProgress(){ $('progress').style.display='none'; $('progress-bar').style.width='0' }
+
+async function pollJob(id, onDone){
+  while(true){
+    const r=await fetch('/api/jobs/'+id); if(!r.ok)return;
+    const job=await r.json();
+    showProgress(`${job.phase} ${job.total?`(${job.done}/${job.total})`:''}`, job.percent||0);
+    if(job.finished){ hideProgress(); onDone(job); return }
+    await new Promise(r=>setTimeout(r,400));
+  }
+}
+
+// ---------- 目录选择 ----------
+let pickerTarget=null, pickerPath='', pickerFiles=false;
+function openPicker(title, start, onPick, files){
+  pickerTarget=onPick; pickerFiles=!!files;
+  $('picker-title').textContent=title;
+  $('picker').style.display='flex';
+  $('picker-ok').style.display=pickerFiles?'none':'';
+  loadPicker(start||'');
+}
+async function loadPicker(path){
+  const q=new URLSearchParams({path:path||''}); if(pickerFiles){q.set('files','1');q.set('suffix','.exe')}
+  const r=await fetch('/api/fs/list?'+q); const d=await r.json();
+  if(!r.ok){alert(d.error||'打不开目录');return}
+  pickerPath=d.path||'';
+  $('picker-cwd').textContent=pickerPath||'（选择盘符）';
+  const box=$('picker-list'); box.innerHTML='';
+  const up=document.createElement('div'); up.className='fitem'; up.innerHTML='<span class="fname">..</span>';
+  up.onclick=()=>loadPicker(d.parent||''); box.appendChild(up);
+  for(const e of d.entries){
+    const div=document.createElement('div'); div.className='fitem';
+    div.innerHTML=`<span class="fname">${e.name}${e.type==='dir'?'/':''}</span>`;
+    div.onclick=()=>{ if(e.type==='file'){ if(pickerTarget)pickerTarget(e.path); closePicker() } else loadPicker(e.path) };
+    box.appendChild(div);
+  }
+}
+function closePicker(){ $('picker').style.display='none'; pickerTarget=null }
+$('picker-up').onclick=async()=>{ const parts=pickerPath.split(/[\\/]/).filter(Boolean); parts.pop(); loadPicker(parts.join('/')) };
+$('picker-cancel').onclick=closePicker;
+$('picker-ok').onclick=()=>{ if(pickerTarget)pickerTarget(pickerPath); closePicker() };
+
+// ---------- 实例设置 ----------
+let editingInstance=null;
+async function openInstanceSettings(it){
+  editingInstance=it;
+  const r=await fetch('/api/instances'); const d=await r.json();
+  const full=d.instances.find(x=>x.id===it.id); if(!full)return;
+  const cfg=await (await fetch('/api/instances/'+it.id+'/settings')).json();
+  $('insset-name').textContent=cfg.name;
+  $('is-java').value=cfg.java||''; $('is-min').value=cfg.min_memory_mb; $('is-max').value=cfg.max_memory_mb;
+  $('is-jvm').value=(cfg.jvm_args||[]).join(' '); $('is-enc').value=cfg.encoding||'utf-8';
+  $('is-nogui').checked=!!cfg.nogui; $('is-core').value=cfg.launch_mode==='jar'?cfg.jar:cfg.args_file;
+  $('is-msg').textContent=''; $('insset').style.display='block';
+}
+$('is-java-browse').onclick=()=>openPicker('选择 java.exe', $('is-java').value||'', p=>{$('is-java').value=p}, true);
+$('is-cancel').onclick=()=>{$('insset').style.display='none'};
+$('is-save').onclick=async()=>{
+  if(!editingInstance)return;
+  const body={java:$('is-java').value.trim(),min_memory_mb:Number($('is-min').value),max_memory_mb:Number($('is-max').value),
+    jvm_args:$('is-jvm').value,encoding:$('is-enc').value,nogui:$('is-nogui').checked};
+  const core=$('is-core').value.trim();
+  if(core){ body[/^.*\\.jar$/i.test(core)?'jar':'args_file']=core }
+  const r=await fetch('/api/instances/'+editingInstance.id,{method:'PATCH',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ $('is-msg').textContent='失败：'+(d.error||''); return }
+  $('insset').style.display='none'; refresh();
 };
 
 async function loadBackups(){
