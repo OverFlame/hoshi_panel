@@ -9,7 +9,7 @@ description = "Minecraft server panel for a single operator: web UI, process sup
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
-dependencies = ["aiohttp>=3.10", "segno>=1.6"]
+dependencies = ["aiohttp>=3.10", "segno>=1.6", "psutil>=5.9"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
@@ -40,4 +40,6 @@ select = ["E", "F", "I", "W", "B", "UP"]
 "src/hoshi/web/app.py" = ["E501"]
 "src/hoshi/web/audit_page.py" = ["E501"]
 "src/hoshi/web/index_page.py" = ["E501"]
+"src/hoshi/web/overview_page.py" = ["E501"]
+"src/hoshi/web/font_css.py" = ["E501"]
 

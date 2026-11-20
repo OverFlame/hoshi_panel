@@ -61,6 +61,7 @@ from ..instances.diagnose import diagnose
 from ..instances.java import pick_for
 from ..instances.migrate import execute_migration, plan_migration
 from ..instances.properties import Properties
+from ..instances.settings import PER_INSTANCE_KEYS, coerce_value, effective, resolve
 from ..jobs import JobStore
 from ..map import (
     MarkerStore,
@@ -85,11 +86,14 @@ from ..map import (
 from ..map import (
     write_markers as write_bluemap_markers,
 )
+from ..metrics import MetricsSampler
 from ..mods import ModrinthClient, apply_lookup, scan_mods
 from ..mods import toggle as toggle_mod
 from ..security import commands, exposure, jvmargs
 from .audit_page import AUDIT_HTML
+from .font_css import FONT_FACE_CSS
 from .index_page import INDEX_HTML
+from .overview_page import OVERVIEW_HTML
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
@@ -449,6 +453,7 @@ def create_app(
             LOGIN_HTML.replace("{{app}}", APP_NAME)
             .replace("{{username}}", str(config.get("auth.username")))
             .replace("{{error}}", request.query.get("error", ""))
+            .replace("</style>", FONT_FACE_CSS + "</style>")
         )
         return web.Response(text=text, content_type="text/html")
 
@@ -508,19 +513,37 @@ def create_app(
         response.del_cookie(CSRF_COOKIE, path="/")
         return response
 
-    async def index(request: web.Request) -> web.Response:
+    async def overview(request: web.Request) -> web.Response:
         session = request[SESSION_KEY]
+        text = (
+            OVERVIEW_HTML.replace("{{app}}", APP_NAME)
+            .replace("{{version}}", VERSION)
+            .replace("{{user}}", session.username)
+            .replace("</style>", FONT_FACE_CSS + "</style>")
+        )
+        return web.Response(text=text, content_type="text/html")
+
+    async def instance_page(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        try:
+            instance = registry.get(request.match_info["id"])
+        except InstanceNotFound:
+            raise web.HTTPFound("/") from None
         text = (
             INDEX_HTML.replace("{{app}}", APP_NAME)
             .replace("{{version}}", VERSION)
             .replace("{{user}}", session.username)
             .replace("{{banner}}", exposure.banner(config))
             .replace("{{banner_class}}", "local" if str(config.get("web.exposure")) == "local" else "")
+            .replace("{{instance_id}}", instance.id)
+            .replace("{{instance_name}}", instance.name)
+            .replace("</style>", FONT_FACE_CSS + "</style>")
         )
         return web.Response(text=text, content_type="text/html")
 
     async def audit_page(request: web.Request) -> web.Response:
-        return web.Response(text=AUDIT_HTML.replace("{{app}}", APP_NAME), content_type="text/html")
+        text = AUDIT_HTML.replace("{{app}}", APP_NAME).replace("</style>", FONT_FACE_CSS + "</style>")
+        return web.Response(text=text, content_type="text/html")
 
     async def audit_list(request: web.Request) -> web.Response:
         if db is None:
@@ -548,8 +571,10 @@ def create_app(
         return web.json_response({"ok": True, "sessions_revoked": dropped})
 
     async def settings_page(request: web.Request) -> web.Response:
-        text = SETTINGS_HTML.replace("{{app}}", APP_NAME).replace(
-            "{{group_limit}}", str(config.get("bot.group_limit"))
+        text = (
+            SETTINGS_HTML.replace("{{app}}", APP_NAME)
+            .replace("{{group_limit}}", str(config.get("bot.group_limit")))
+            .replace("</style>", FONT_FACE_CSS + "</style>")
         )
         return web.Response(text=text, content_type="text/html")
 
@@ -719,6 +744,7 @@ def create_app(
                     "launch_mode": instance.launch_mode,
                     "state": proc.state if proc else "stopped",
                     "pid": proc.pid if proc else None,
+                    "players": len(proc.players) if proc else 0,
                 }
             )
         return web.json_response({"instances": items})
@@ -761,10 +787,11 @@ def create_app(
             return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
         payload = await _read_payload(request)
         text = str(payload.get("text", ""))
+        instance_obj = registry.get(instance_id)
         allowed, reason = commands.check(
             text,
-            mode=str(config.get("console.command_mode")),
-            extra=list(config.get("console.extra_commands") or []),
+            mode=str(resolve(config, instance_obj, "console.command_mode")[0]),
+            extra=list(resolve(config, instance_obj, "console.extra_commands")[0] or []),
         )
         if not allowed:
             audit(request[SESSION_KEY].username, "command", target=instance_id, result="denied", detail=reason)
@@ -1108,7 +1135,7 @@ def create_app(
         instance = registry.get(instance_id)
         mods_dir = instance.root / "mods"
         items = await asyncio.get_running_loop().run_in_executor(None, scan_mods, mods_dir)
-        if request.query.get("lookup") == "1" and bool(config.get("mods.side_lookup")):
+        if request.query.get("lookup") == "1" and bool(resolve(config, instance, "mods.side_lookup")[0]):
             client = ModrinthClient(data_dir / "cache" / "modrinth.json")
             found = await client.lookup([item.sha1 for item in items if item.sha1])
             apply_lookup(items, found)
@@ -1356,7 +1383,13 @@ def create_app(
         return ok
 
     async def map_proxy(request: web.Request) -> web.StreamResponse:
-        if not bool(config.get("map.enabled")):
+        instances_all = registry.all()
+        mapped = None
+        for item in instances_all:
+            if map_flag(item, "map.enabled"):
+                mapped = item
+                break
+        if mapped is None:
             return web.json_response({"ok": False, "error": "地图未启用"}, status=404)
         token = request.query.get("t", "")
         if token and not sessions.get(request.cookies.get(COOKIE_NAME)):
@@ -1406,6 +1439,9 @@ def create_app(
             return web.Response(text="// unauthorized", content_type="application/javascript", status=401)
         return web.Response(text=MAP_OVERLAY_JS, content_type="application/javascript")
 
+    def map_flag(instance: Instance | None, key: str):
+        return resolve(config, instance, key)[0]
+
     async def map_status(request: web.Request) -> web.Response:
         instance_id = request.query.get("instance", "")
         instances = registry.all()
@@ -1414,7 +1450,7 @@ def create_app(
             if instance_id and instance_id in (item.id, item.name):
                 target = item
         data: dict[str, object] = {
-            "enabled": bool(config.get("map.enabled")),
+            "enabled": bool(map_flag(target, "map.enabled")),
             "upstream": config.get("map.upstream"),
             "instances": [item.name for item in instances],
         }
@@ -1443,8 +1479,8 @@ def create_app(
 
     async def map_poll_start(request: web.Request) -> web.Response:
         instance = registry.get(request.match_info["id"])
-        if not bool(config.get("map.enabled")):
-            return web.json_response({"ok": False, "error": "先开启地图"}, status=400)
+        if not bool(map_flag(instance, "map.enabled")):
+            return web.json_response({"ok": False, "error": "先给这个实例开启地图"}, status=400)
         props_path = instance.root / "server.properties"
         props = Properties.load(props_path) if props_path.is_file() else Properties()
         if props.get("enable-rcon", "false").lower() != "true":
@@ -1535,8 +1571,8 @@ def create_app(
             instance.root,
             data_dir,
             mc_version=str(payload.get("mc_version", "1.20.1")),
-            accept_download=bool(config.get("map.accept_download")),
-            threads=int(config.get("map.render_threads")),
+            accept_download=bool(map_flag(instance, "map.accept_download")),
+            threads=int(map_flag(instance, "map.render_threads")),
         )
         installed = False
         cached = find_cached(data_dir, result.asset)
@@ -1656,6 +1692,63 @@ def create_app(
                 continue
         return web.json_response({"path": str(target), "entries": entries, "parent": str(target.parent)})
 
+
+    # ---------- 实例级设置 ----------
+
+    async def instance_settings(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        items = effective(config, instance)
+        if request.method == "GET":
+            return web.json_response(
+                {
+                    "instance": {"id": instance.id, "name": instance.name},
+                    "items": list(items.values()),
+                    "overrides": dict(instance.settings),
+                }
+            )
+        payload = await _read_payload(request)
+        values = payload.get("values") or {}
+        if not isinstance(values, dict):
+            return web.json_response({"ok": False, "error": "values 需要是对象"}, status=400)
+        changed: list[str] = []
+        for key, raw in values.items():
+            if key not in PER_INSTANCE_KEYS:
+                return web.json_response({"ok": False, "error": f"不支持按实例设置的项: {key}"}, status=400)
+            try:
+                value = coerce_value(key, raw)
+            except (ValueError, TypeError) as exc:
+                return web.json_response({"ok": False, "error": str(exc)}, status=400)
+            if raw is None:
+                instance.settings.pop(key, None)
+                changed.append(key)
+                continue
+            if instance.settings.get(key) != value:
+                instance.settings[key] = value
+                changed.append(key)
+        if changed:
+            registry.update(instance)
+            audit(request[SESSION_KEY].username, "instance.settings", target=instance.id, result="ok",
+                  detail=", ".join(changed))
+        return web.json_response({"ok": True, "changed": changed, "items": list(effective(config, instance).values())})
+
+    async def instance_setting_reset(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        key = request.match_info["key"]
+        if key not in instance.settings:
+            return web.json_response({"ok": False, "error": "没有覆盖"}, status=404)
+        instance.settings.pop(key, None)
+        registry.update(instance)
+        audit(request[SESSION_KEY].username, "instance.settings.reset", target=instance.id, result="ok", detail=key)
+        return web.json_response({"ok": True, "items": list(effective(config, instance).values())})
+
+    async def metrics_endpoint(_: web.Request) -> web.Response:
+        processes = {
+            instance_id: proc.pid
+            for instance_id, proc in current_app[PROCESSES_KEY].items()
+            if proc.pid
+        }
+        return web.json_response(sampler.to_dict(processes))
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -1686,10 +1779,11 @@ def create_app(
                         payload = json.loads(message.data)
                         if payload.get("type") != "command":
                             continue
+                        ws_instance = registry.get(instance_id)
                         allowed, reason = commands.check(
                             str(payload.get("text", "")),
-                            mode=str(config.get("console.command_mode")),
-                            extra=list(config.get("console.extra_commands") or []),
+                            mode=str(resolve(config, ws_instance, "console.command_mode")[0]),
+                            extra=list(resolve(config, ws_instance, "console.extra_commands")[0] or []),
                         )
                         if allowed:
                             await proc.send(str(payload.get("text", "")))
@@ -1747,6 +1841,7 @@ def create_app(
     current_app = app
     backup_manager = BackupManager(data_dir / "backups", retention=10)
     jobs = JobStore()
+    sampler = MetricsSampler()
     markers = MarkerStore(data_dir / "markers")
     pollers: dict[str, PlayerPoller] = {}
     map_session: aiohttp.ClientSession | None = None
@@ -1764,7 +1859,8 @@ def create_app(
     app.router.add_get("/login", login_page)
     app.router.add_post("/api/login", login_submit)
     app.router.add_post("/api/logout", logout)
-    app.router.add_get("/", index)
+    app.router.add_get("/", overview)
+    app.router.add_get("/i/{id}", instance_page)
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/settings", get_settings)
@@ -1781,6 +1877,9 @@ def create_app(
     app.router.add_get("/api/audit", audit_list)
     app.router.add_get("/api/instances", list_instances)
     app.router.add_get("/api/instances/{id}/settings", get_instance_settings)
+    app.router.add_route("*", "/api/instances/{id}/instance-settings", instance_settings)
+    app.router.add_post("/api/instances/{id}/instance-settings/{key}/reset", instance_setting_reset)
+    app.router.add_get("/api/metrics", metrics_endpoint)
     app.router.add_patch("/api/instances/{id}", update_instance)
     app.router.add_get("/api/fs/list", fs_list)
     app.router.add_get("/api/jobs/{id}", job_status)

@@ -32,6 +32,8 @@ class Instance:
     jvm_args: list[str] = field(default_factory=list)
     encoding: str = "utf-8"
     nogui: bool = True
+    # 实例级覆盖：只存与全局默认不同的设置项
+    settings: dict[str, object] = field(default_factory=dict)
     # 调试/测试用：覆盖启动程序与参数，正常实例留空
     program: str = ""
     args_override: list[str] = field(default_factory=list)
@@ -70,6 +72,7 @@ class Instance:
             "jvm_args": list(self.jvm_args),
             "encoding": self.encoding,
             "nogui": self.nogui,
+            "settings": dict(self.settings),
             "program": self.program,
             "args_override": list(self.args_override),
         }

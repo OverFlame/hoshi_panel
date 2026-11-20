@@ -3,10 +3,10 @@
 模板用 {{token}} 占位，避免 JS 模板字符串里的 $ 被误解析。
 """
 
-INDEX_HTML = """<!doctype html>
+INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{app}}</title>
+<title>{{app}} · {{instance_name}}</title>
 <style>
  :root{color-scheme:dark}
  html,body{height:100%}
@@ -15,7 +15,7 @@ INDEX_HTML = """<!doctype html>
  header h1{font-size:1rem;margin:0;font-weight:600}
  .banner{padding:6px 18px;font-size:.82rem;background:#2a2013;color:#ffd28a;border-bottom:1px solid #3d2f16}
  .banner.local{background:#13221a;color:#8ff0c0;border-color:#1c3a2a}
- main{display:grid;grid-template-columns:300px 1fr;flex:1;min-height:0}
+ main{display:flex;flex:1;min-height:0}
  aside{border-right:1px solid #23262d;overflow:auto;padding:10px}
  .inst{padding:10px;border:1px solid #23262d;border-radius:8px;margin-bottom:8px;cursor:pointer}
  .inst.active{border-color:#2f6fed}
@@ -47,9 +47,17 @@ INDEX_HTML = """<!doctype html>
  #editor{position:fixed;inset:5% 8%;background:#12151b;border:1px solid #2c313a;border-radius:10px;display:none;flex-direction:column;padding:10px;z-index:20}
  #editor textarea{flex:1;width:100%;background:#0b0d11;color:#e6e6e6;border:1px solid #262b33;border-radius:8px;padding:8px;font:12px/1.5 ui-monospace,monospace}
  #editor .row{padding-top:8px}
+ #console .line{padding:0 2px;white-space:pre-wrap;word-break:break-all}
+ #console .lv-warn{color:#ffd28a}
+ #console .lv-error{color:#ff8a8a}
+ #console .lv-debug,#console .lv-trace{color:#8a93a3}
+ #console .lv-join{color:#8ff0c0}
+ #console .lv-leave{color:#ffb27a}
+ #console .lv-panel{color:#8ab4ff}
+ #console{font-family:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 </style></head>
 <body>
-<header><h1>{{app}} <span class="muted">{{version}}</span></h1>
+<header><h1><a href="/">← 概览</a> · {{instance_name}}</h1>
 <div style="display:flex;gap:10px;align-items:center">
   <a href="#" id="import-pack">导入整合包</a>
   <a href="/settings">设置</a><a href="/audit">审计</a>
@@ -64,7 +72,6 @@ INDEX_HTML = """<!doctype html>
   </div>
 </div>
 <main>
- <aside id="list"><p class="muted">加载中…</p></aside>
  <section>
   <div class="tabs">
     <button class="tab active" data-pane="console">控制台</button>
@@ -72,6 +79,7 @@ INDEX_HTML = """<!doctype html>
     <button class="tab" data-pane="mods">模组</button>
     <button class="tab" data-pane="map">地图</button>
     <button class="tab" data-pane="backups">备份</button>
+    <button class="tab" data-pane="settings">设置</button>
     <button class="tab" id="export">导出 zip</button>
   </div>
   <div class="pane active" id="pane-console">
@@ -107,6 +115,10 @@ INDEX_HTML = """<!doctype html>
     </div>
     <div id="players" class="muted" style="padding:0 10px"></div>
     <div id="markerlist" style="flex:1;overflow:auto;padding:0 10px 10px"></div>
+  </div>
+  <div class="pane" id="pane-settings">
+    <div class="toolbar"><span class="muted">这里的开关只影响这一个服务器，未改动的项沿用全局默认。</span></div>
+    <div id="inssettings" style="flex:1;overflow:auto;padding:0 10px 10px"></div>
   </div>
   <div class="pane" id="pane-backups">
     <div class="toolbar"><button id="backup-new">创建备份</button><span class="muted" id="retention"></span></div>
@@ -144,14 +156,14 @@ INDEX_HTML = """<!doctype html>
   </div>
 </div>
 <script>
-const state={current:null, ws:null, path:''};
+const state={current:"{{instance_id}}", ws:null, path:''};
 const $=id=>document.getElementById(id);
 const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
 const H={'X-CSRF-Token':csrf};
 function badge(s){return `<span class="state ${s}">${s}</span>`}
 async function refresh(){
   const r=await fetch('/api/instances'); if(!r.ok) return;
-  const data=await r.json(); const box=$('list'); box.innerHTML='';
+  const data=await r.json(); const box=document.getElementById('list'); if(!box) return; box.innerHTML='';
   if(!data.instances.length){box.innerHTML='<p class="muted">还没有实例。用命令行 hoshi instances add 添加，或点右上角导入整合包。</p>';return}
   for(const it of data.instances){
     const div=document.createElement('div');
@@ -176,19 +188,19 @@ async function select(id){
   state.current=id; state.path=''; await refresh();
   if(state.ws){state.ws.close();state.ws=null}
   const r=await fetch(`/api/instances/${id}/log?lines=300`); const data=await r.json();
-  $('console').textContent=(data.lines||[]).join('\\n')+'\\n';
+  renderLines(data.lines||[]);
   const proto=location.protocol==='https:'?'wss:':'ws:';
   const ws=new WebSocket(`${proto}//${location.host}/ws/console/${id}`);
   state.ws=ws;
   ws.onmessage=ev=>{
     const m=JSON.parse(ev.data);
-    if(m.type==='snapshot'){$('console').textContent=m.lines.join('\\n')+'\\n'}
-    else if(m.type==='log'){$('console').textContent+=m.line+'\\n';$('console').scrollTop=$('console').scrollHeight}
+    if(m.type==='snapshot'){renderLines(m.lines)}
+    else if(m.type==='log'){appendLine(m.line)}
     else if(m.type==='state'||m.type==='exit'){refresh()}
   };
   ws.onopen=()=>{$('text').disabled=false;$('send').disabled=false};
   ws.onclose=()=>{$('text').disabled=true;$('send').disabled=true};
-  loadFiles(''); loadBackups(); loadMods(); loadMap();
+  loadFiles(''); loadBackups(); loadMods(); loadMap(); loadInstanceSettings();
 }
 async function send(){
   const text=$('text').value.trim(); if(!text||!state.ws)return;
@@ -360,6 +372,79 @@ $('is-save').onclick=async()=>{
   if(!r.ok){ $('is-msg').textContent='失败：'+(d.error||''); return }
   $('insset').style.display='none'; refresh();
 };
+
+// ---------- 控制台上色 ----------
+const LEVEL_RE=/\/(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\]/;
+const JOIN_RE=/\]: (\S{1,16}) joined the game/;
+const LEAVE_RE=/\]: (\S{1,16}) left the game/;
+function classify(line){
+  if(line.startsWith('> '))return 'lv-panel';
+  if(JOIN_RE.test(line))return 'lv-join';
+  if(LEAVE_RE.test(line))return 'lv-leave';
+  const m=LEVEL_RE.exec(line);
+  if(m){const lv=m[1];return lv==='ERROR'||lv==='FATAL'?'lv-error':lv==='WARN'||lv==='WARNING'?'lv-warn':lv==='DEBUG'||lv==='TRACE'?'lv-debug':'lv-info'}
+  const low=line.toLowerCase();
+  if(low.includes('exception')||low.includes('error'))return 'lv-error';
+  if(low.includes('warn'))return 'lv-warn';
+  return 'lv-info';
+}
+function makeLine(text){
+  const div=document.createElement('div'); div.className='line '+classify(text); div.textContent=text; return div;
+}
+function renderLines(lines){
+  const box=$('console'); box.innerHTML='';
+  const frag=document.createDocumentFragment();
+  for(const line of lines) frag.appendChild(makeLine(line));
+  box.appendChild(frag); box.scrollTop=box.scrollHeight;
+}
+function appendLine(line){
+  const box=$('console');
+  box.appendChild(makeLine(line));
+  while(box.childElementCount>2000) box.removeChild(box.firstChild);
+  box.scrollTop=box.scrollHeight;
+}
+
+// ---------- 实例级设置 ----------
+async function loadInstanceSettings(){
+  if(!state.current)return;
+  const r=await fetch(`/api/instances/${state.current}/instance-settings`);
+  if(!r.ok)return;
+  const d=await r.json();
+  const box=$('inssettings'); box.innerHTML='';
+  for(const item of d.items){
+    const row=document.createElement('div'); row.className='bitem';
+    const source=item.source==='instance'?'本实例':item.source==='global'?'全局':'默认';
+    row.innerHTML=`<span class="fname">${item.label}</span>
+      <span class="muted">${item.key} · ${source}</span>`;
+    const ctrl=document.createElement('span');
+    let input;
+    if(item.kind==='bool'){
+      input=document.createElement('input'); input.type='checkbox'; input.checked=!!item.value;
+    } else {
+      input=document.createElement('input'); input.style.width='110px';
+      input.value=Array.isArray(item.value)?item.value.join(','):(item.value??'');
+    }
+    input.dataset.key=item.key;
+    const save=document.createElement('button'); save.textContent='保存';
+    save.onclick=async()=>{
+      const raw=item.kind==='bool'?input.checked:input.value;
+      const resp=await fetch(`/api/instances/${state.current}/instance-settings`,{method:'PATCH',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({values:{[item.key]:raw}})});
+      const dd=await resp.json();
+      if(!resp.ok){alert(dd.error||'保存失败');return}
+      loadInstanceSettings();
+    };
+    ctrl.appendChild(input); ctrl.appendChild(save);
+    if(item.source==='instance'){
+      const reset=document.createElement('button'); reset.textContent='恢复默认';
+      reset.onclick=async()=>{
+        await fetch(`/api/instances/${state.current}/instance-settings/${item.key}/reset`,{method:'POST',headers:H});
+        loadInstanceSettings();
+      };
+      ctrl.appendChild(reset);
+    }
+    row.appendChild(ctrl); box.appendChild(row);
+  }
+}
 
 async function loadBackups(){
   if(!state.current)return;
