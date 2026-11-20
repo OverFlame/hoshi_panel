@@ -124,6 +124,16 @@ SCHEMA: tuple[Item, ...] = (
         restart=True,
     ),
     Item(
+        key="web.theme",
+        kind="enum",
+        default="dark",
+        values=("dark", "light"),
+        label="界面主题",
+        summary="深色或浅色，Tabler 内置",
+        why="需要更细的调整时，把自定义 CSS 放到 data/theme.css，会自动加载。",
+        group="网络与访问",
+    ),
+    Item(
         key="web.exposure",
         kind="enum",
         default="local",

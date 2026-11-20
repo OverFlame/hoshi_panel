@@ -61,7 +61,9 @@ body{font-size:.85rem}
 .btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
 .card-body{padding:12px 14px}
 </style>
-<link rel="stylesheet" href="/assets/tabler.css"></head>
+<link rel="stylesheet" href="/assets/tabler.css">
+<style>:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem;--hoshi-accent:#2f6fed;--hoshi-radius:10px;--tblr-font-sans-serif:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body{font-family:var(--tblr-font-sans-serif);font-size:.85rem}.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}.card-body{padding:12px 14px}</style>
+<link rel="stylesheet" href="/assets/custom.css"></head>
 <body>
 <header><h1><a href="/">← 概览</a> · {{instance_name}}</h1>
 <div style="display:flex;gap:10px;align-items:center">
@@ -568,7 +570,8 @@ $('import-pack').onclick=async(e)=>{
   input.click();
 };
 
-refresh(); setInterval(refresh,4000);
+if(state.current){ select(state.current) }
+setInterval(refresh,4000);
 
 function unifyButtons(){
   document.querySelectorAll('button').forEach(b=>{

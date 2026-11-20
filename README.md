@@ -19,6 +19,7 @@
 | [psutil](https://github.com/giampaolo/psutil) | 内存与 CPU 读取 | BSD-3-Clause |
 | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 界面字体 | SIL OFL 1.1，全文见 `LICENSES/` |
 | [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) | 字体图标补丁 | 字体 OFL 1.1，脚本 MIT |
+| [Tabler](https://github.com/tabler/tabler) | 界面主题 | MIT |
 | Python、aiohttp、segno | 运行时、网页服务、二维码 | PSF、Apache-2.0、BSD |
 
 ## AI 生成警告 / AI Notice
@@ -128,6 +129,12 @@ uv run python -m hoshi
 | Create 列车显示在地图上 | 需要额外的第三方接口 |
 | 定时重启、定时备份 | 还没有 |
 | 给别人分配不同权限 | 单人使用，只有一个管理员 |
+
+## 主题
+
+界面默认 Tabler 深色主题，可在设置里切深色或浅色。想改细节，把覆盖样式写到 `data/theme.css` 即可，页面会自动加载。`GET /api/theme` 会列出可用变量。
+
+Tabler 本体是 MIT 许可。官网卖的「Premium」是额外的模板、插画、邮件模板等素材，与开源主题库无关，不需要购买。
 
 ## 字体
 

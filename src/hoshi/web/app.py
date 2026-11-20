@@ -126,12 +126,17 @@ LOGIN_HTML = """<!doctype html>
  .err{color:#ff6b6b;margin-top:10px;font-size:.85rem;min-height:1em}
  .hint{opacity:.55;font-size:.78rem;margin-top:8px}
 </style><style>
-:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
-body{font-size:.85rem}
+:root{
+  --tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem;
+  --hoshi-accent:#2f6fed;--hoshi-radius:10px;
+  --tblr-font-sans-serif:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 .btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
 .card-body{padding:12px 14px}
 </style>
-<link rel="stylesheet" href="/assets/tabler.css"></head>
+<link rel="stylesheet" href="/assets/tabler.css">
+<link rel="stylesheet" href="/assets/custom.css"></head>
 <body>
 <form method="post" action="/api/login">
   <h1>{{app}} 登录</h1>
@@ -171,12 +176,17 @@ SETTINGS_HTML = """<!doctype html>
  #msg{margin-top:12px;font-size:.85rem}
  a{color:#8ab4ff}
 </style><style>
-:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem}
-body{font-size:.85rem}
+:root{
+  --tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem;
+  --hoshi-accent:#2f6fed;--hoshi-radius:10px;
+  --tblr-font-sans-serif:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 .btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
 .card-body{padding:12px 14px}
 </style>
-<link rel="stylesheet" href="/assets/tabler.css"></head>
+<link rel="stylesheet" href="/assets/tabler.css">
+<link rel="stylesheet" href="/assets/custom.css"></head>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
 <main>
@@ -555,12 +565,17 @@ def create_app(
             .replace("{{banner_class}}", "local" if str(config.get("web.exposure")) == "local" else "")
             .replace("{{instance_id}}", instance.id)
             .replace("{{instance_name}}", instance.name)
+            .replace("{{theme}}", str(config.get("web.theme")))
             .replace("</style>", FONT_FACE_CSS + "</style>")
         )
         return web.Response(text=text, content_type="text/html")
 
     async def audit_page(request: web.Request) -> web.Response:
-        text = AUDIT_HTML.replace("{{app}}", APP_NAME).replace("</style>", FONT_FACE_CSS + "</style>")
+        text = (
+            AUDIT_HTML.replace("{{app}}", APP_NAME)
+            .replace("{{theme}}", str(config.get("web.theme")))
+            .replace("</style>", FONT_FACE_CSS + "</style>")
+        )
         return web.Response(text=text, content_type="text/html")
 
     async def audit_list(request: web.Request) -> web.Response:
@@ -592,6 +607,7 @@ def create_app(
         text = (
             SETTINGS_HTML.replace("{{app}}", APP_NAME)
             .replace("{{group_limit}}", str(config.get("bot.group_limit")))
+            .replace("{{theme}}", str(config.get("web.theme")))
             .replace("</style>", FONT_FACE_CSS + "</style>")
         )
         return web.Response(text=text, content_type="text/html")
@@ -1888,6 +1904,31 @@ def create_app(
 
     # ---------- 其它 ----------
 
+    async def custom_css(_: web.Request) -> web.Response:
+        path = data_dir / "theme.css"
+        if not path.is_file():
+            return web.Response(text="/* 在 data/theme.css 里写自定义样式 */", content_type="text/css")
+        return web.Response(
+            text=path.read_text(encoding="utf-8", errors="replace"),
+            content_type="text/css",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    async def theme_info(_: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "theme": str(config.get("web.theme")),
+                "custom_css": "/assets/custom.css",
+                "variables": {
+                    "--hoshi-accent": "主题强调色",
+                    "--hoshi-radius": "卡片圆角",
+                    "--tblr-body-font-size": "正文字号",
+                    "--tblr-font-sans-serif": "界面字体",
+                },
+                "howto": "把覆盖样式写到 data/theme.css，刷新页面即生效",
+            }
+        )
+
     async def tabler_css(_: web.Request) -> web.Response:
         return web.Response(
             text=TABLER_CSS,
@@ -1959,6 +2000,8 @@ def create_app(
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/api/health", health)
     app.router.add_get("/assets/tabler.css", tabler_css)
+    app.router.add_get("/assets/custom.css", custom_css)
+    app.router.add_get("/api/theme", theme_info)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", post_settings)
     app.router.add_get("/api/settings/history", settings_history)

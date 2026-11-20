@@ -14,7 +14,7 @@ AUDIT_HTML = """<!doctype html>
  body{margin:0;font:14px/1.6 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
  header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid #23262d}
  main{padding:16px 18px 60px;max-width:1100px}
- .tabs{display:flex;gap:8px;margin-bottom:12px}
+ .tabs{display:flex;gap:8px;margin-bottom:12px;align-items:center;min-height:44px}
  .tab{padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer}
  .tab.active{border-color:#2f6fed;background:#182338}
  table{border-collapse:collapse;width:100%;font-size:.85rem}
@@ -31,14 +31,16 @@ body{font-size:.85rem}
 .btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}
 .card-body{padding:12px 14px}
 </style>
-<link rel="stylesheet" href="/assets/tabler.css"></head>
+<link rel="stylesheet" href="/assets/tabler.css">
+<style>:root{--tblr-body-font-size:.85rem;--tblr-body-font-size-xs:.78rem;--hoshi-accent:#2f6fed;--hoshi-radius:10px;--tblr-font-sans-serif:"JetBrainsMono Nerd Font","JetBrains Mono Web","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}body{font-family:var(--tblr-font-sans-serif);font-size:.85rem}.btn-sm{padding:.22rem .55rem;font-size:.78rem;line-height:1.2}.card-body{padding:12px 14px}</style>
+<link rel="stylesheet" href="/assets/custom.css"></head>
 <body>
 <header><h1 style="font-size:1rem;margin:0">{{app}} 审计</h1><div><a href="/">返回</a></div></header>
 <main>
 <div class="tabs">
   <button class="tab active" data-view="audit">操作审计</button>
   <button class="tab" data-view="settings">设置改动</button>
-  <input id="filter" placeholder="按动作过滤，例如 login、command（仅审计）">
+  <input id="filter" placeholder="按动作过滤，例如 login、command" style="visibility:visible">
   <button class="tab" id="reload">刷新</button>
 </div>
 <table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table>
@@ -69,7 +71,7 @@ async function load(){
 }
 document.querySelectorAll('.tab[data-view]').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab[data-view]').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active'); view=t.dataset.view; $('filter').style.display=view==='audit'?'':'none'; load();
+  t.classList.add('active'); view=t.dataset.view; $('filter').style.visibility=view==='audit'?'visible':'hidden'; load();
 });
 $('reload').onclick=load;
 load();
