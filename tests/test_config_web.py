@@ -155,7 +155,12 @@ async def test_bad_password_rejected(tmp_path):
 async def test_logout_revokes_session(tmp_path):
     app = create_app(make_config(tmp_path), registry=InstanceRegistry(tmp_path / "data" / "instances.json"))
     async with TestClient(TestServer(app)) as client:
-        await login(client)
+        resp = await client.post(
+            "/api/login",
+            data={"username": "admin", "password": PASSWORD},
+            allow_redirects=False,
+        )
+        csrf = resp.cookies["hoshi_csrf"].value
         assert (await client.get("/api/instances")).status == 200
-        await client.post("/api/logout")
+        await client.post("/api/logout", headers={"X-CSRF-Token": csrf})
         assert (await client.get("/api/instances")).status == 401

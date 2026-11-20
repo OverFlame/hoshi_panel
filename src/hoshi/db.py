@@ -32,6 +32,16 @@ DDL = (
     """
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit (ts)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS settings_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        key TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT
+    )
+    """,
 )
 
 
@@ -69,6 +79,35 @@ def init(path: Path) -> sqlite3.Connection:
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return None if row is None else str(row["value"])
+
+
+def log_setting(
+    conn: sqlite3.Connection,
+    actor: str,
+    key: str,
+    old_value: object,
+    new_value: object,
+) -> None:
+    conn.execute(
+        "INSERT INTO settings_log (ts, actor, key, old_value, new_value) VALUES (?, ?, ?, ?, ?)",
+        (now(), actor, key, _short(old_value), _short(new_value)),
+    )
+    conn.commit()
+
+
+def recent_settings(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, object]]:
+    rows = conn.execute(
+        "SELECT ts, actor, key, old_value, new_value FROM settings_log ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _short(value: object) -> str:
+    text = "" if value is None else str(value)
+    if len(text) > 80:
+        return text[:77] + "..."
+    return text
 
 
 def record(

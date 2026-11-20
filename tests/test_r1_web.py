@@ -46,14 +46,18 @@ def make_instance(tmp_path) -> Instance:
     return instance
 
 
-async def login(client: TestClient):
+async def login(client: TestClient) -> str:
     resp = await client.post(
         "/api/login",
         data={"username": "admin", "password": PASSWORD},
         allow_redirects=False,
     )
     assert resp.status in (302, 303), resp.status
-    return resp
+    return resp.cookies["hoshi_csrf"].value
+
+
+def csrf_headers(csrf: str) -> dict[str, str]:
+    return {"X-CSRF-Token": csrf}
 
 
 async def test_requires_login(tmp_path):
@@ -88,13 +92,13 @@ async def test_start_stop_and_console(tmp_path):
     app = create_app(config, registry=registry)
 
     async with TestClient(TestServer(app)) as client:
-        await login(client)
+        csrf = await login(client)
 
         ws = await client.ws_connect(f"/ws/console/{instance.id}")
         snapshot = await ws.receive_json(timeout=5)
         assert snapshot["type"] == "snapshot"
 
-        start = await client.post(f"/api/instances/{instance.id}/start")
+        start = await client.post(f"/api/instances/{instance.id}/start", headers=csrf_headers(csrf))
         assert start.status == 200, await start.text()
 
         done = False
@@ -105,7 +109,9 @@ async def test_start_stop_and_console(tmp_path):
                 break
         assert done, "没有等到 Done 输出"
 
-        await client.post(f"/api/instances/{instance.id}/command", json={"text": "list"})
+        await client.post(
+            f"/api/instances/{instance.id}/command", json={"text": "list"}, headers=csrf_headers(csrf)
+        )
         seen_players = False
         for _ in range(50):
             message = await ws.receive_json(timeout=5)
@@ -114,7 +120,7 @@ async def test_start_stop_and_console(tmp_path):
                 break
         assert seen_players, "没有看到 list 的输出"
 
-        stop = await client.post(f"/api/instances/{instance.id}/stop")
+        stop = await client.post(f"/api/instances/{instance.id}/stop", headers=csrf_headers(csrf))
         assert stop.status == 200, await stop.text()
 
         for _ in range(50):
@@ -131,8 +137,8 @@ async def test_stop_when_not_running(tmp_path):
     instance = registry.add(make_instance(tmp_path))
     app = create_app(config, registry=registry)
     async with TestClient(TestServer(app)) as client:
-        await login(client)
-        resp = await client.post(f"/api/instances/{instance.id}/stop")
+        csrf = await login(client)
+        resp = await client.post(f"/api/instances/{instance.id}/stop", headers=csrf_headers(csrf))
         assert resp.status == 409
 
 
@@ -175,4 +181,5 @@ async def test_crash_state(tmp_path):
 @pytest.fixture(autouse=True)
 def _no_delay():
     yield
+
 

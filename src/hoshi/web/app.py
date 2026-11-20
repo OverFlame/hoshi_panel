@@ -1,6 +1,6 @@
-"""Web 层：登录、实例管理、控制台 WebSocket。
+"""Web 层：登录（含两步验证）、实例管理、控制台、设置。
 
-单人使用，一条会话一条控制台连接就够用，不做多用户与房间。
+所有写操作要求会话 Cookie + CSRF 头。启动暴露档由 security.exposure 判定，CLI 负责拦截。
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -15,19 +16,37 @@ from typing import Any
 from aiohttp import WSMsgType, web
 
 from .. import APP_NAME, UPSTREAM, VERSION
-from ..auth import COOKIE_NAME, SessionStore, verify_password
-from ..config import Config
+from ..auth import (
+    COOKIE_NAME,
+    LoginThrottle,
+    SessionStore,
+    consume_recovery,
+    generate_recovery_codes,
+    generate_secret,
+    hash_recovery_codes,
+    provisioning_uri,
+    verify_password,
+    verify_totp,
+)
+from ..config import Config, save
+from ..db import log_setting, recent_settings, record
 from ..instances import InstanceNotFound, InstanceProcess, InstanceRegistry, probe, scan
+from ..security import commands, exposure, jvmargs
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
 SESSIONS_KEY: web.AppKey[SessionStore] = web.AppKey("sessions", SessionStore)
 PROCESSES_KEY: web.AppKey[dict[str, InstanceProcess]] = web.AppKey("processes", dict)
 LOG_DIR_KEY: web.AppKey[Path] = web.AppKey("log_dir", Path)
-
+THROTTLE_KEY: web.AppKey[LoginThrottle] = web.AppKey("throttle", LoginThrottle)
+DB_KEY: web.AppKey[Any] = web.AppKey("db", object)
+PENDING_KEY: web.AppKey[dict[str, str]] = web.AppKey("pending_totp", dict)
 SESSION_KEY: web.RequestKey = web.RequestKey("session", object)
 
+CSRF_COOKIE = "hoshi_csrf"
+CSRF_HEADER = "X-CSRF-Token"
 PUBLIC_PATHS = {"/login", "/api/login", "/api/health", "/favicon.ico"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 LOGIN_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -35,20 +54,23 @@ LOGIN_HTML = """<!doctype html>
 <title>登录 · {{app}}</title>
 <style>
  body{font:14px/1.6 system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#0f1115;color:#e6e6e6}
- form{background:#171a21;padding:28px;border-radius:10px;width:300px;box-shadow:0 8px 30px #0006}
+ form{background:#171a21;padding:28px;border-radius:10px;width:320px;box-shadow:0 8px 30px #0006}
  h1{font-size:1.1rem;margin:0 0 16px}
  label{display:block;margin:10px 0 4px;font-size:.85rem;opacity:.75}
  input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #333;background:#0f1115;color:#e6e6e6}
  button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.95rem;cursor:pointer}
  .err{color:#ff6b6b;margin-top:10px;font-size:.85rem;min-height:1em}
+ .hint{opacity:.55;font-size:.78rem;margin-top:8px}
 </style></head>
 <body>
 <form method="post" action="/api/login">
   <h1>{{app}} 登录</h1>
-  <label for="u">账号</label><input id="u" name="username" value="{{user}}name" autocomplete="username">
+  <label for="u">账号</label><input id="u" name="username" value="{{username}}" autocomplete="username">
   <label for="p">密码</label><input id="p" name="password" type="password" autocomplete="current-password" autofocus>
+  <label for="c">动态码（如已开启两步验证）</label><input id="c" name="code" inputmode="numeric" autocomplete="one-time-code">
   <button type="submit">登录</button>
   <div class="err">{{error}}</div>
+  <div class="hint">忘记密码：在服务器上运行 hoshi reset-password</div>
 </form>
 </body></html>
 """
@@ -62,7 +84,9 @@ INDEX_HTML = """<!doctype html>
  body{margin:0;font:14px/1.55 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
  header{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid #23262d}
  header h1{font-size:1rem;margin:0;font-weight:600}
- main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 49px)}
+ .banner{padding:6px 18px;font-size:.82rem;background:#2a2013;color:#ffd28a;border-bottom:1px solid #3d2f16}
+ .banner.local{background:#13221a;color:#8ff0c0;border-color:#1c3a2a}
+ main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 96px)}
  aside{border-right:1px solid #23262d;overflow:auto;padding:10px}
  .inst{padding:10px;border:1px solid #23262d;border-radius:8px;margin-bottom:8px;cursor:pointer}
  .inst.active{border-color:#2f6fed}
@@ -77,21 +101,24 @@ INDEX_HTML = """<!doctype html>
  #cmd{display:flex;gap:8px;padding:10px;border-top:1px solid #23262d}
  #cmd input{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
  .muted{opacity:.6}
+ a{color:#8ab4ff}
 </style></head>
 <body>
 <header><h1>{{app}} <span class="muted">{{version}}</span></h1>
-<div><span class="muted">{{user}}</span> <button id="logout">退出</button></div></header>
+<div><a href="/settings">设置</a> <span class="muted">{{user}}</span> <button id="logout">退出</button></div></header>
+<div class="banner {{banner_class}}">{{banner}}</div>
 <main>
  <aside id="list"><p class="muted">加载中…</p></aside>
  <section>
   <pre id="console"></pre>
-  <div id="cmd"><input id="text" placeholder="输入命令后回车（R1 阶段不做白名单）" disabled>
+  <div id="cmd"><input id="text" placeholder="输入命令后回车（受白名单限制）" disabled>
   <button id="send" disabled>发送</button></div>
  </section>
 </main>
 <script>
 const state={current:null, ws:null};
 const $=id=>document.getElementById(id);
+const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
 function badge(s){return `<span class="state ${s}">${s}</span>`}
 async function refresh(){
   const r=await fetch('/api/instances'); if(!r.ok) return;
@@ -108,7 +135,8 @@ async function refresh(){
     div.onclick=e=>{if(e.target.dataset.act)return;select(it.id)};
     div.querySelectorAll('button').forEach(b=>b.onclick=async ev=>{
       ev.stopPropagation();
-      await fetch(`/api/instances/${it.id}/${b.dataset.act}`,{method:'POST'});
+      const resp=await fetch(`/api/instances/${it.id}/${b.dataset.act}`,{method:'POST',headers:{'X-CSRF-Token':csrf}});
+      if(!resp.ok){const d=await resp.json().catch(()=>({}));alert(d.error||'操作失败')}
       setTimeout(refresh,300);
     });
     box.appendChild(div);
@@ -118,14 +146,14 @@ async function select(id){
   state.current=id; await refresh();
   if(state.ws){state.ws.close();state.ws=null}
   const r=await fetch(`/api/instances/${id}/log?lines=300`); const data=await r.json();
-  $('console').textContent=(data.lines||[]).join('\n')+'\n';
+  $('console').textContent=(data.lines||[]).join('\\n')+'\\n';
   const proto=location.protocol==='https:'?'wss:':'ws:';
   const ws=new WebSocket(`${proto}//${location.host}/ws/console/${id}`);
   state.ws=ws;
   ws.onmessage=ev=>{
     const m=JSON.parse(ev.data);
-    if(m.type==='snapshot'){$('console').textContent=m.lines.join('\n')+'\n'}
-    else if(m.type==='log'){$('console').textContent+=m.line+'\n';$('console').scrollTop=$('console').scrollHeight}
+    if(m.type==='snapshot'){$('console').textContent=m.lines.join('\\n')+'\\n'}
+    else if(m.type==='log'){$('console').textContent+=m.line+'\\n';$('console').scrollTop=$('console').scrollHeight}
     else if(m.type==='state'||m.type==='exit'){refresh()}
   };
   ws.onopen=()=>{$('text').disabled=false;$('send').disabled=false};
@@ -133,12 +161,89 @@ async function select(id){
 }
 async function send(){
   const text=$('text').value.trim(); if(!text||!state.ws)return;
-  state.ws.send(JSON.stringify({type:'command',text})); $('text').value='';
+  state.ws.send(JSON.stringify({type:'command',text,csrf})); $('text').value='';
 }
 $('send').onclick=send;
 $('text').addEventListener('keydown',e=>{if(e.key==='Enter')send()});
-$('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST'});location.href='/login'};
+$('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':csrf}});location.href='/login'};
 refresh(); setInterval(refresh,4000);
+</script>
+</body></html>
+"""
+
+SETTINGS_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · {{app}}</title>
+<style>
+ :root{color-scheme:dark}
+ body{margin:0;font:14px/1.6 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
+ header{display:flex;justify-content:space-between;padding:12px 18px;border-bottom:1px solid #23262d}
+ h2{font-size:.95rem;margin:24px 0 8px;color:#9db4d0}
+ main{max-width:900px;padding:0 18px 60px}
+ .item{border:1px solid #23262d;border-radius:8px;padding:12px;margin-bottom:10px}
+ .item .top{display:flex;justify-content:space-between;gap:10px}
+ .key{font-family:ui-monospace,monospace;font-size:.78rem;opacity:.6}
+ .why{font-size:.8rem;opacity:.7;margin-top:2px}
+ .row{display:flex;gap:10px;align-items:center;margin-top:8px}
+ input,select{background:#141821;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 8px;min-width:220px}
+ .tag{font-size:.72rem;padding:1px 6px;border-radius:99px;background:#2a2f3a}
+ .tag.high{background:#5a1d1d;color:#ffb8b8}
+ .tag.medium{background:#4a3a12;color:#ffd28a}
+ button{padding:7px 14px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer}
+ button.primary{background:#2f6fed;border-color:#2f6fed}
+ .muted{opacity:.6}
+ #msg{margin-top:12px;font-size:.85rem}
+ a{color:#8ab4ff}
+</style></head>
+<body>
+<header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a></div></header>
+<main>
+<p class="muted">改动立即写入配置文件；标「重启生效」的需要重启面板。来源列显示这个值现在来自哪里。</p>
+<div id="items"></div>
+<div class="row"><button class="primary" id="save">保存改动</button><span class="muted">危险项保存后可能要求重启</span></div>
+<div id="msg"></div>
+</main>
+<script>
+const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
+let items=[];
+function render(){
+  const box=document.getElementById('items'); box.innerHTML='';
+  let group='';
+  for(const it of items){
+    if(it.group!==group){group=it.group;const h=document.createElement('h2');h.textContent=group;box.appendChild(h)}
+    const div=document.createElement('div'); div.className='item';
+    const risk=it.risk==='low'?'':'<span class="tag '+it.risk+'">'+it.risk+'</span>';
+    const restart=it.restart?'<span class="tag">重启生效</span>':'';
+    div.innerHTML=`<div class="top"><div><b>${it.label}</b> <span class="key">${it.key}</span></div>
+      <div>${risk} ${restart} <span class="tag">${it.source}</span></div></div>
+      <div class="why">${it.summary} ${it.why||''}</div>`;
+    const row=document.createElement('div'); row.className='row';
+    let input;
+    if(it.kind==='bool'){input=document.createElement('select');input.innerHTML='<option value="true">开启</option><option value="false">关闭</option>';input.value=String(it.value)}
+    else if(it.kind==='list'){input=document.createElement('input');input.value=(it.value||[]).join(',');input.dataset.list='1'}
+    else {input=document.createElement('input');input.value=it.value??'';input.type=it.secret?'password':'text'}
+    input.dataset.key=it.key; input.dataset.kind=it.kind;
+    row.appendChild(input); div.appendChild(row); box.appendChild(div);
+  }
+}
+async function load(){
+  const r=await fetch('/api/settings'); const data=await r.json(); items=data.items; render();
+  if(data.errors&&data.errors.length){document.getElementById('msg').textContent='当前配置有问题：'+data.errors.join('；')}
+}
+document.getElementById('save').onclick=async()=>{
+  const values={};
+  document.querySelectorAll('#items input,#items select').forEach(el=>{
+    const key=el.dataset.key; if(!key)return;
+    values[key]=el.dataset.list?el.value.split(',').map(s=>s.trim()).filter(Boolean):el.value;
+  });
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({values})});
+  const data=await r.json();
+  const msg=document.getElementById('msg');
+  msg.textContent=r.ok?('已保存'+(data.restart_required.length?'，需重启：'+data.restart_required.join('、'):'')):('失败：'+(data.errors||[]).join('；'));
+  if(r.ok) await load();
+};
+load();
 </script>
 </body></html>
 """
@@ -148,6 +253,8 @@ def create_app(
     config: Config,
     registry: InstanceRegistry | None = None,
     sessions: SessionStore | None = None,
+    db: Any = None,
+    throttle: LoginThrottle | None = None,
 ) -> web.Application:
     started = time.time()
     data_dir = Path(str(config.get("app.data_dir")))
@@ -157,19 +264,49 @@ def create_app(
         idle_minutes=int(config.get("auth.session_idle_minutes")),
         absolute_hours=int(config.get("auth.session_absolute_hours")),
     )
+    throttle = throttle or LoginThrottle(
+        limit=int(config.get("security.login_fail_limit")),
+        lock_seconds=int(config.get("security.login_lock_minutes")) * 60,
+    )
+
+    def persist() -> None:
+        if config.path is not None:
+            with contextlib.suppress(OSError):
+                save(config, config.path)
+
+    def audit(actor: str, action: str, target: str = "", result: str = "ok", detail: str = "") -> None:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                record(db, actor=actor, action=action, target=target, result=result, detail=detail)
+
+    def client_ip(request: web.Request) -> str:
+        if bool(config.get("web.behind_proxy")):
+            forwarded = request.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+        return request.remote or "unknown"
+
+    # ---------- 中间件 ----------
 
     @web.middleware
     async def require_session(request: web.Request, handler: Any) -> web.StreamResponse:
         path = request.path
         if request.method in ("GET", "POST") and path in PUBLIC_PATHS:
             return await handler(request)
-        token = request.cookies.get(COOKIE_NAME)
-        session = sessions.get(token)
+        session = sessions.get(request.cookies.get(COOKIE_NAME))
         if session is None:
             if path.startswith("/api/") or path.startswith("/ws/"):
                 return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
             raise web.HTTPFound("/login")
         request[SESSION_KEY] = session
+
+        if request.method not in SAFE_METHODS:
+            token = request.headers.get(CSRF_HEADER) or str(
+                (await _read_payload(request)).get("csrf", "")
+            )
+            expected = session.meta.get("csrf", "")
+            if not expected or not secrets.compare_digest(str(token), expected):
+                return web.json_response({"ok": False, "error": "csrf"}, status=403)
         return await handler(request)
 
     # ---------- 页面 ----------
@@ -188,18 +325,45 @@ def create_app(
         form = await _read_payload(request)
         username = str(form.get("username", ""))
         password = str(form.get("password", ""))
-        if username != config.get("auth.username") or not verify_password(
+        code = str(form.get("code", ""))
+        ip = client_ip(request)
+        keys = (f"ip:{ip}", f"user:{username}")
+
+        wait = throttle.check(*keys)
+        if wait:
+            audit(username or "unknown", "login", target=ip, result="locked", detail=f"{wait}s")
+            return web.json_response(
+                {"ok": False, "error": f"尝试过多，{wait} 秒后再试"},
+                status=429,
+                headers={"Retry-After": str(wait)},
+            )
+
+        ok = username == config.get("auth.username") and verify_password(
             password, str(config.get("auth.password_hash"))
-        ):
+        )
+        if ok and bool(config.get("auth.totp_enabled")):
+            ok = _check_second_factor(config, code)
+
+        if not ok:
+            locked = throttle.fail(*keys)
+            audit(username or "unknown", "login", target=ip, result="fail")
+            if locked:
+                audit(username or "unknown", "login", target=ip, result="locked", detail=f"{locked}s")
             if request.headers.get("Accept", "").startswith("application/json"):
-                return web.json_response({"ok": False, "error": "账号或密码错误"}, status=401)
+                return web.json_response({"ok": False, "error": "账号、密码或动态码错误"}, status=401)
             raise web.HTTPFound("/login?error=%E8%B4%A6%E5%8F%B7%E6%88%96%E5%AF%86%E7%A0%81%E9%94%99%E8%AF%AF")
-        session = sessions.create(username, {"ip": request.remote or ""})
+
+        throttle.reset(*keys)
+        session = sessions.create(username, {"ip": ip, "csrf": secrets.token_urlsafe(24)})
+        audit(username, "login", target=ip, result="ok")
         response = web.Response(status=303, headers={"Location": "/"})
         response.set_cookie(
-            COOKIE_NAME,
-            session.token,
-            httponly=True,
+            COOKIE_NAME, session.token, httponly=True, samesite="Lax", max_age=session.idle_seconds, path="/"
+        )
+        response.set_cookie(
+            CSRF_COOKIE,
+            session.meta["csrf"],
+            httponly=False,
             samesite="Lax",
             max_age=session.idle_seconds,
             path="/",
@@ -210,6 +374,7 @@ def create_app(
         sessions.revoke(request.cookies.get(COOKIE_NAME))
         response = web.json_response({"ok": True})
         response.del_cookie(COOKIE_NAME, path="/")
+        response.del_cookie(CSRF_COOKIE, path="/")
         return response
 
     async def index(request: web.Request) -> web.Response:
@@ -218,8 +383,132 @@ def create_app(
             INDEX_HTML.replace("{{app}}", APP_NAME)
             .replace("{{version}}", VERSION)
             .replace("{{user}}", session.username)
+            .replace("{{banner}}", exposure.banner(config))
+            .replace("{{banner_class}}", "local" if str(config.get("web.exposure")) == "local" else "")
         )
         return web.Response(text=text, content_type="text/html")
+
+    async def settings_page(request: web.Request) -> web.Response:
+        text = SETTINGS_HTML.replace("{{app}}", APP_NAME)
+        return web.Response(text=text, content_type="text/html")
+
+    # ---------- 设置 ----------
+
+    async def get_settings(_: web.Request) -> web.Response:
+        errors, warnings = exposure.evaluate(config)
+        return web.json_response(
+            {
+                "items": config.as_public(),
+                "errors": config.validate() + errors,
+                "warnings": warnings,
+                "banner": exposure.banner(config),
+            }
+        )
+
+    async def post_settings(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        payload = await _read_payload(request)
+        values = payload.get("values") or {}
+        if not isinstance(values, dict):
+            return web.json_response({"ok": False, "errors": ["values 需要是对象"]}, status=400)
+
+        changed: list[str] = []
+        restart_required: list[str] = []
+        errors: list[str] = []
+        for key, raw in values.items():
+            item = config_item(key)
+            if item is None:
+                errors.append(f"未知配置项: {key}")
+                continue
+            try:
+                value = item.coerce(raw)
+                item.validate(value)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            if config.get(key) != value:
+                old = config.get(key)
+                config.set(key, value, "file")
+                changed.append(key)
+                if db is not None:
+                    log_setting(db, session.username, key, old, value)
+                if item.restart:
+                    restart_required.append(key)
+
+        if errors:
+            return web.json_response({"ok": False, "errors": errors}, status=400)
+
+        persist()
+        problems = config.validate() + exposure.evaluate(config)[0]
+        if problems:
+            return web.json_response(
+                {"ok": False, "errors": problems, "restart_required": restart_required}, status=400
+            )
+        if changed:
+            audit(session.username, "settings", detail=", ".join(changed))
+        return web.json_response({"ok": True, "changed": changed, "restart_required": restart_required})
+
+    async def settings_history(_: web.Request) -> web.Response:
+        if db is None:
+            return web.json_response({"items": []})
+        return web.json_response({"items": recent_settings(db, 50)})
+
+    # ---------- 两步验证 ----------
+
+    async def auth_status(_: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "totp_enabled": bool(config.get("auth.totp_enabled")),
+                "recovery_left": len(config.get("auth.recovery_hashes") or []),
+                "exposure": config.get("web.exposure"),
+                "banner": exposure.banner(config),
+            }
+        )
+
+    async def totp_setup(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        secret = generate_secret()
+        current_app[PENDING_KEY] = {"secret": secret, "actor": session.username}
+        return web.json_response(
+            {
+                "ok": True,
+                "secret": secret,
+                "uri": provisioning_uri(secret, str(config.get("auth.username")), APP_NAME),
+            }
+        )
+
+    async def totp_enable(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        pending = current_app[PENDING_KEY]
+        payload = await _read_payload(request)
+        secret = str(pending.get("secret", ""))
+        if not secret:
+            return web.json_response({"ok": False, "error": "先调用 setup"}, status=400)
+        passed, step = verify_totp(secret, str(payload.get("code", "")), last_step=0)
+        if not passed:
+            return web.json_response({"ok": False, "error": "动态码不正确"}, status=400)
+        codes = generate_recovery_codes()
+        config.set("auth.totp_secret", secret, "file")
+        config.set("auth.totp_enabled", True, "file")
+        config.set("auth.totp_last_step", step, "file")
+        config.set("auth.recovery_hashes", hash_recovery_codes(codes), "file")
+        persist()
+        current_app[PENDING_KEY] = {}
+        audit(session.username, "totp", result="enabled")
+        return web.json_response({"ok": True, "recovery_codes": codes})
+
+    async def totp_disable(request: web.Request) -> web.Response:
+        session = request[SESSION_KEY]
+        payload = await _read_payload(request)
+        if not verify_password(str(payload.get("password", "")), str(config.get("auth.password_hash"))):
+            return web.json_response({"ok": False, "error": "密码不正确"}, status=400)
+        config.set("auth.totp_enabled", False, "file")
+        config.set("auth.totp_secret", "", "file")
+        config.set("auth.recovery_hashes", [], "file")
+        config.set("web.exposure", "local", "file") if str(config.get("web.exposure")) == "public" else None
+        persist()
+        audit(session.username, "totp", result="disabled")
+        return web.json_response({"ok": True})
 
     # ---------- 实例 ----------
 
@@ -227,6 +516,9 @@ def create_app(
         processes: dict[str, InstanceProcess] = current_app[PROCESSES_KEY]
         if instance_id not in processes:
             instance = registry.get(instance_id)
+            problems = jvmargs.validate(instance.jvm_args)
+            if problems:
+                raise ValueError("; ".join(problems))
             processes[instance_id] = InstanceProcess(instance, log_dir)
         return processes[instance_id]
 
@@ -254,6 +546,8 @@ def create_app(
             proc = process_for(instance_id)
         except InstanceNotFound:
             return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
         if action == "start":
             result = await proc.start()
         elif action == "stop":
@@ -262,6 +556,8 @@ def create_app(
             result = await proc.kill()
         else:
             return web.json_response({"ok": False, "error": "未知动作"}, status=400)
+        audit(request[SESSION_KEY].username, f"instance.{action}", target=instance_id,
+              result="ok" if result.get("ok") else "fail")
         return web.json_response(result, status=200 if result.get("ok") else 409)
 
     async def instance_log(request: web.Request) -> web.Response:
@@ -280,15 +576,32 @@ def create_app(
         except InstanceNotFound:
             return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
         payload = await _read_payload(request)
-        result = await proc.send(str(payload.get("text", "")))
+        text = str(payload.get("text", ""))
+        allowed, reason = commands.check(
+            text,
+            mode=str(config.get("console.command_mode")),
+            extra=list(config.get("console.extra_commands") or []),
+        )
+        if not allowed:
+            audit(request[SESSION_KEY].username, "command", target=instance_id, result="denied", detail=reason)
+            return web.json_response({"ok": False, "error": reason}, status=403)
+        result = await proc.send(text)
+        audit(request[SESSION_KEY].username, "command", target=instance_id,
+              result="ok" if result.get("ok") else "fail", detail=commands.normalize(text)[:60])
         return web.json_response(result, status=200 if result.get("ok") else 409)
 
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
+        origin = request.headers.get("Origin")
+        if origin and not _same_origin(origin, request):
+            return web.json_response({"ok": False, "error": "origin"}, status=403)
         instance_id = request.match_info["id"]
         try:
             proc = process_for(instance_id)
         except InstanceNotFound:
             return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         await ws.send_json({"type": "snapshot", "lines": proc.snapshot(300), "state": proc.state})
@@ -305,8 +618,17 @@ def create_app(
                 if message.type == WSMsgType.TEXT:
                     with contextlib.suppress(json.JSONDecodeError):
                         payload = json.loads(message.data)
-                        if payload.get("type") == "command":
+                        if payload.get("type") != "command":
+                            continue
+                        allowed, reason = commands.check(
+                            str(payload.get("text", "")),
+                            mode=str(config.get("console.command_mode")),
+                            extra=list(config.get("console.extra_commands") or []),
+                        )
+                        if allowed:
                             await proc.send(str(payload.get("text", "")))
+                        else:
+                            await ws.send_json({"type": "log", "line": f"[面板] 拒绝：{reason}"})
                 elif message.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
                     break
         finally:
@@ -327,11 +649,9 @@ def create_app(
                 "upstream": UPSTREAM,
                 "uptime_s": round(time.time() - started, 1),
                 "instances": len(registry.all()),
+                "exposure": config.get("web.exposure"),
             }
         )
-
-    async def settings(_: web.Request) -> web.Response:
-        return web.json_response({"items": config.as_public(), "errors": config.validate()})
 
     async def java_list(request: web.Request) -> web.Response:
         if request.query.get("scan") != "1":
@@ -355,14 +675,24 @@ def create_app(
     app[SESSIONS_KEY] = sessions
     app[PROCESSES_KEY] = {}
     app[LOG_DIR_KEY] = log_dir
+    app[THROTTLE_KEY] = throttle
+    app[DB_KEY] = db
+    app[PENDING_KEY] = {}
     current_app = app
 
     app.router.add_get("/login", login_page)
     app.router.add_post("/api/login", login_submit)
     app.router.add_post("/api/logout", logout)
     app.router.add_get("/", index)
+    app.router.add_get("/settings", settings_page)
     app.router.add_get("/api/health", health)
-    app.router.add_get("/api/settings", settings)
+    app.router.add_get("/api/settings", get_settings)
+    app.router.add_post("/api/settings", post_settings)
+    app.router.add_get("/api/settings/history", settings_history)
+    app.router.add_get("/api/auth/status", auth_status)
+    app.router.add_post("/api/auth/totp/setup", totp_setup)
+    app.router.add_post("/api/auth/totp/enable", totp_enable)
+    app.router.add_post("/api/auth/totp/disable", totp_disable)
     app.router.add_get("/api/instances", list_instances)
     app.router.add_post("/api/instances/{id}/{action:start|stop|kill}", instance_action)
     app.router.add_get("/api/instances/{id}/log", instance_log)
@@ -381,6 +711,27 @@ def create_app(
     return app
 
 
+def config_item(key: str):
+    from ..config.schema import BY_KEY
+
+    return BY_KEY.get(key)
+
+
+def _check_second_factor(config: Config, code: str) -> bool:
+    """先试 TOTP，再试恢复码。TOTP 通过后写回最后步长，防重放。"""
+    secret = str(config.get("auth.totp_secret") or "")
+    passed, step = verify_totp(secret, code, last_step=int(config.get("auth.totp_last_step") or 0))
+    if passed:
+        config.set("auth.totp_last_step", step, "file")
+        return True
+    hashes = list(config.get("auth.recovery_hashes") or [])
+    used, rest = consume_recovery(hashes, code)
+    if used:
+        config.set("auth.recovery_hashes", rest, "file")
+        return True
+    return False
+
+
 async def _read_payload(request: web.Request) -> dict[str, Any]:
     if request.content_type.startswith("application/json"):
         try:
@@ -392,3 +743,7 @@ async def _read_payload(request: web.Request) -> dict[str, Any]:
         return dict(post)
     return {}
 
+
+def _same_origin(origin: str, request: web.Request) -> bool:
+    host = request.host
+    return origin.rstrip("/").endswith(host)

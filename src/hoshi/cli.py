@@ -19,7 +19,8 @@ from .auth.bootstrap import INITIAL_PASSWORD_FILE, ensure_admin
 from .config import Config, ConfigError, default_path, load, save
 from .db import get_meta, record
 from .db import init as init_db
-from .instances import Instance, InstanceError, InstanceRegistry, detect, scan
+from .instances import Instance, InstanceError, InstanceRegistry, detect, probe, scan
+from .security import exposure as exposure_mod
 from .web import create_app
 
 CLI_MAP = {
@@ -61,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--config", type=Path, default=None)
     add.add_argument("--data-dir", type=str, dest="data_dir")
 
+    reset = sub.add_parser("reset-password", help="生成新的管理员密码")
+    reset.add_argument("--config", type=Path, default=None)
+    reset.add_argument("--data-dir", type=str, dest="data_dir")
+
     java = sub.add_parser("java", help="Java 探测")
     java.add_argument("action", choices=("scan",))
     java.add_argument("--path", action="append", default=[])
@@ -90,12 +95,23 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 0
 
     errors = config.validate()
+    exposure_errors, exposure_warnings = exposure_mod.evaluate(config)
     if args.check_config:
-        for error in errors:
+        for error in errors + exposure_errors:
             print(f"校验失败: {error}", file=sys.stderr)
-        if not errors:
+        for warning in exposure_warnings:
+            print(f"警告: {warning}", file=sys.stderr)
+        if not errors and not exposure_errors:
             print("配置校验通过")
-        return 1 if errors else 0
+        return 1 if (errors or exposure_errors) else 0
+
+    if exposure_errors:
+        for error in exposure_errors:
+            print(f"拒绝启动: {error}", file=sys.stderr)
+        return 2
+    for warning in exposure_warnings:
+        print(f"警告: {warning}", file=sys.stderr)
+    print(f"暴露状态: {exposure_mod.banner(config)}")
 
     data_dir = Path(str(config.get("app.data_dir")))
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +129,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print(f"同时写入 {data_dir / INITIAL_PASSWORD_FILE}")
         print("=" * 56)
 
-    app = create_app(config, registry=registry)
+    app = create_app(config, registry=registry, db=conn)
     bind = str(config.get("web.bind"))
     port = int(config.get("web.port"))
     print(f"监听 http://{bind}:{port}")
@@ -148,7 +164,13 @@ def cmd_instances(args: argparse.Namespace) -> int:
             return 1
         mode = args.mode if args.mode != "auto" else result.launch_mode
         java = args.java
-        if not java:
+        if java:
+            info = probe(java)
+            if info is None:
+                print(f"不是可用的 Java: {java}", file=sys.stderr)
+                return 1
+            print(f"使用 Java: {info.path} ({info.version})")
+        else:
             found = scan()
             if not found:
                 print("没有探测到 Java，请用 --java 指定", file=sys.stderr)
@@ -178,6 +200,24 @@ def cmd_instances(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_reset_password(args: argparse.Namespace) -> int:
+    from .auth import generate_password, hash_password
+
+    config = load_config(args)
+    password = generate_password()
+    config.set("auth.password_hash", hash_password(password), "cli")
+    target = args.config or default_path()
+    save(config, target)
+    data_dir = Path(str(config.get("app.data_dir")))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / INITIAL_PASSWORD_FILE).write_text(
+        f"用户名: {config.get('auth.username')}\n密码: {password}\n", encoding="utf-8"
+    )
+    print(f"新密码: {password}")
+    print(f"已写入 {data_dir / INITIAL_PASSWORD_FILE}，并保存到 {target}")
+    return 0
+
+
 def cmd_java(args: argparse.Namespace) -> int:
     found = scan(args.path)
     if not found:
@@ -200,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_instances(args)
     if args.command == "java":
         return cmd_java(args)
+    if args.command == "reset-password":
+        return cmd_reset_password(args)
     parser.print_help()
     return 2
 

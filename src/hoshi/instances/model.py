@@ -40,7 +40,9 @@ class Instance:
 
     @staticmethod
     def new(name: str, directory: str, **kwargs: Any) -> Instance:
-        return Instance(id=secrets.token_hex(6), name=name, directory=directory, **kwargs)
+        instance = Instance(id=secrets.token_hex(6), name=name, directory=directory, **kwargs)
+        instance.validate()
+        return instance
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Instance:
@@ -91,6 +93,11 @@ class Instance:
             raise InstanceError("内存必须为正数")
         if self.min_memory_mb > self.max_memory_mb:
             raise InstanceError("最小内存不能大于最大内存")
+        from ..security import jvmargs
+
+        problems = jvmargs.validate(list(self.jvm_args))
+        if problems:
+            raise InstanceError("; ".join(problems))
 
     # ---------- 路径与参数 ----------
 
