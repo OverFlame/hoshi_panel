@@ -27,6 +27,8 @@ class JobStore:
             "finished": False,
             "error": "",
             "result": None,
+            "cancel_requested": False,
+            "cancelled": False,
             "started": time.time(),
         }
         self._jobs[job_id] = job
@@ -47,6 +49,22 @@ class JobStore:
 
     def finish(self, job_id: str, result: Any = None, error: str = "") -> None:
         self.update(job_id, finished=True, result=result, error=error, phase="完成" if not error else "失败")
+
+    def request_cancel(self, job_id: str) -> bool:
+        job = self._jobs.get(job_id)
+        if job is None or job["finished"]:
+            return False
+        job["cancel_requested"] = True
+        job["phase"] = "正在取消"
+        return True
+
+    def cancel_requested(self, job_id: str) -> bool:
+        job = self._jobs.get(job_id)
+        return bool(job and job["cancel_requested"])
+
+    def mark_cancelled(self, job_id: str) -> None:
+        self.update(job_id, cancelled=True)
+        self.finish(job_id, error="已取消")
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         job = self._jobs.get(job_id)

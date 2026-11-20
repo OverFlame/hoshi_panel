@@ -26,11 +26,11 @@ INDEX_HTML = r"""<!doctype html>
  button{padding:4px 9px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
  button:hover{border-color:#2f6fed}
  button.primary{background:#2f6fed;border-color:#2f6fed}
- section{display:flex;flex-direction:column;min-width:0;min-height:0}
+ section{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
  .tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid #23262d}
  .tab{padding:4px 10px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
  .tab.active{border-color:#2f6fed;background:#182338}
- .pane{flex:1;min-height:0;display:none;flex-direction:column;overflow:hidden}
+ .pane{flex:1;min-height:0;display:none;flex-direction:column;overflow:hidden;width:100%}
  .pane.active{display:flex}
  #console{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0d11}
  #cmd{display:flex;gap:8px;padding:10px;border-top:1px solid #23262d}
@@ -66,11 +66,15 @@ INDEX_HTML = r"""<!doctype html>
 </div></header>
 <div class="banner {{banner_class}}">{{banner}}</div>
 <div id="progress" style="display:none;padding:6px 18px;background:#101821;border-bottom:1px solid #23262d;font-size:.82rem">
-  <span id="progress-text"></span>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+    <span id="progress-text"></span>
+    <button id="progress-cancel" style="display:none">取消</button>
+  </div>
   <div style="height:6px;background:#1c222c;border-radius:99px;margin-top:4px;overflow:hidden">
     <div id="progress-bar" style="height:100%;width:0;background:#2f6fed;transition:width .2s"></div>
   </div>
 </div>
+<div id="toasts" style="position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:60"></div>
 <main>
  <section>
   <div class="tabs">
@@ -240,7 +244,7 @@ let editing=null;
 async function openEditor(path){
   const r=await fetch(`/api/instances/${state.current}/file?path=${encodeURIComponent(path)}`);
   const d=await r.json();
-  if(!r.ok){alert(d.error||'打不开');return}
+  if(!r.ok){toast(d.error||'打不开','error');return}
   editing=path;
   $('editor-title').textContent=path;
   $('editor-body').value=d.content;
@@ -252,7 +256,7 @@ $('editor-save').onclick=async()=>{
   const r=await fetch(`/api/instances/${state.current}/file`,{method:'PUT',headers:{...H,'Content-Type':'application/json'},
     body:JSON.stringify({path:editing,content:$('editor-body').value})});
   const d=await r.json();
-  if(!r.ok){alert(d.error||'保存失败');return}
+  if(!r.ok){toast(d.error||'保存失败','error');return}
   $('editor').style.display='none';
 };
 
@@ -282,7 +286,7 @@ $('map-open').onclick=()=>{location.href='/map/'};
 $('map-share').onclick=async()=>{
   const r=await fetch('/api/map/share',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:'{}'});
   const d=await r.json();
-  if(!r.ok){alert(d.error||'失败');return}
+  if(!r.ok){toast(d.error||'失败','error');return}
   const url=location.origin+d.url;
   prompt('只读链接（复制给朋友）：',url);
 };
@@ -292,25 +296,46 @@ $('mk-add').onclick=async()=>{
   if(!body.name||body.x===''||body.z===''){alert('名字与 X/Z 必填');return}
   const r=await fetch('/api/map/markers',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();
-  if(!r.ok){alert(d.error||'失败');return}
+  if(!r.ok){toast(d.error||'失败','error');return}
   if(d.bluemap&&!d.bluemap.applied){alert('已保存，但没写进地图：'+(d.bluemap.reason||''))}
   $('mk-name').value='';$('mk-x').value='';$('mk-z').value='';$('mk-note').value='';
   loadMap();
 };
 
-// ---------- 进度条 ----------
-function showProgress(text, pct){
+// ---------- 提示条 ----------
+function toast(text, kind){
+  const box=$('toasts');
+  const div=document.createElement('div');
+  const color=kind==='error'?'#ff8a8a':kind==='ok'?'#8ff0c0':'#dfe5ee';
+  div.style.cssText=`background:#151b24;border:1px solid #2a3140;border-left:3px solid ${color};color:${color};`+
+    'padding:8px 12px;border-radius:8px;font-size:.85rem;max-width:360px;box-shadow:0 6px 20px #0007';
+  div.textContent=text;
+  box.appendChild(div);
+  setTimeout(()=>div.remove(), kind==='error'?6000:3500);
+}
+
+// ---------- 进度条与任务 ----------
+let currentJob=null;
+function showProgress(text, pct, cancellable){
   const box=$('progress'); box.style.display='block';
   $('progress-text').textContent=text;
   $('progress-bar').style.width=(pct>=0?pct:0)+'%';
+  $('progress-cancel').style.display=cancellable?'':'none';
 }
-function hideProgress(){ $('progress').style.display='none'; $('progress-bar').style.width='0' }
+function hideProgress(){ $('progress').style.display='none'; $('progress-bar').style.width='0'; $('progress-cancel').style.display='none'; currentJob=null }
 
-async function pollJob(id, onDone){
+$('progress-cancel').onclick=async()=>{
+  if(!currentJob)return;
+  await fetch(`/api/jobs/${currentJob}/cancel`,{method:'POST',headers:H});
+  toast('已请求取消，等当前批次结束','info');
+};
+
+async function pollJob(id, onDone, cancellable){
+  currentJob=id;
   while(true){
     const r=await fetch('/api/jobs/'+id); if(!r.ok)return;
     const job=await r.json();
-    showProgress(`${job.phase} ${job.total?`(${job.done}/${job.total})`:''}`, job.percent||0);
+    showProgress(`${job.phase} ${job.total?`(${job.done}/${job.total})`:''}`, job.percent||0, cancellable!==false);
     if(job.finished){ hideProgress(); onDone(job); return }
     await new Promise(r=>setTimeout(r,400));
   }
@@ -489,7 +514,7 @@ async function loadMods(){
     div.querySelector('button').onclick=async()=>{
       const r2=await fetch(`/api/instances/${state.current}/mods/toggle`,{method:'POST',headers:{...H,'Content-Type':'application/json'},
         body:JSON.stringify({file:m.file,enabled:!m.enabled})});
-      const d2=await r2.json(); if(!r2.ok)alert(d2.error||'失败'); loadMods();
+      const d2=await r2.json(); if(!r2.ok)toast(d2.error||'失败','error'); loadMods();
     };
     box.appendChild(div);
   }
@@ -500,11 +525,24 @@ $('mods-lookup').onchange=loadMods;
 $('backup-new').onclick=async()=>{
   if(!state.current)return;
   const r=await fetch(`/api/instances/${state.current}/backup`,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:'{}'});
-  const d=await r.json(); if(!r.ok)alert(d.error||'备份失败'); loadBackups();
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'备份失败','error'); return }
+  await pollJob(d.job.id, job=>{
+    if(job.error){ toast(job.error,'error'); return }
+    toast('备份完成','ok'); loadBackups();
+  });
 };
-$('export').onclick=()=>{
+$('export').onclick=async()=>{
   if(!state.current)return;
-  location.href=`/api/instances/${state.current}/export?include=world,config,mods`;
+  const r=await fetch(`/api/instances/${state.current}/export?include=world,config,mods`,{method:'POST',headers:H});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'导出失败','error'); return }
+  toast('开始打包，可随时取消','info');
+  await pollJob(d.job.id, job=>{
+    if(job.error){ toast(job.error,'error'); return }
+    toast('打包完成，开始下载','ok');
+    location.href=`/api/jobs/${job.id}/download`;
+  });
 };
 
 $('import-pack').onclick=async(e)=>{

@@ -1,5 +1,6 @@
 """R3：文件管理、导出导入、备份、整合包导入。"""
 
+import asyncio
 import io
 import zipfile
 from pathlib import Path
@@ -126,11 +127,30 @@ async def test_write_and_delete_file(tmp_path):
 # ---------- 导出 ----------
 
 
+
+async def wait_job(client, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        resp = await client.get(f"/api/jobs/{job_id}")
+        data = await resp.json()
+        if data.get("finished"):
+            return data
+        await asyncio.sleep(0.05)
+    raise AssertionError("job 没有在超时内完成")
+
+
 async def test_export_zip_contains_files(tmp_path):
     app, _, instance, _ = make_app(tmp_path)
     async with TestClient(TestServer(app)) as client:
-        await login(client)
-        resp = await client.get(f"/api/instances/{instance.id}/export?include=world,config")
+        csrf = await login(client)
+        started = await client.post(
+            f"/api/instances/{instance.id}/export?include=world,config", headers=headers(csrf)
+        )
+        assert started.status == 200
+        job = (await started.json())["job"]
+        done = await wait_job(client, job["id"])
+        assert done["error"] == ""
+        resp = await client.get(f"/api/jobs/{job['id']}/download")
         assert resp.status == 200
         assert resp.headers["Content-Type"] == "application/zip"
         blob = await resp.read()
@@ -178,7 +198,10 @@ async def test_backup_create_list_restore_delete(tmp_path):
         csrf = await login(client)
         created = await client.post(f"/api/instances/{instance.id}/backup", json={}, headers=headers(csrf))
         assert created.status == 200, await created.text()
-        name = (await created.json())["backup"]["name"]
+        payload = await created.json()
+        done = await wait_job(client, payload["job"]["id"])
+        assert done["error"] == ""
+        name = done["result"]["name"]
 
         listing = await client.get(f"/api/instances/{instance.id}/backups")
         assert [b["name"] for b in (await listing.json())["backups"]] == [name]
@@ -232,3 +255,21 @@ async def test_import_pack_creates_instance(tmp_path):
         dup = await client.post("/api/packs/import", data=again, headers=headers(csrf))
         assert dup.status == 409
 
+
+
+async def test_export_cancel(tmp_path):
+    app, _, instance, root = make_app(tmp_path)
+    for index in range(200):
+        (root / "world" / f"chunk-{index}.bin").write_bytes(b"x" * 4096)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        started = await client.post(
+            f"/api/instances/{instance.id}/export?include=world", headers=headers(csrf)
+        )
+        job = (await started.json())["job"]
+        cancel = await client.post(f"/api/jobs/{job['id']}/cancel", headers=headers(csrf))
+        assert cancel.status == 200
+        done = await wait_job(client, job["id"])
+        assert done["cancelled"] is True or done["error"] == "已取消"
+        download = await client.get(f"/api/jobs/{job['id']}/download")
+        assert download.status == 404

@@ -45,7 +45,8 @@ from ..db import (
     record,
     revoke_bot_token,
 )
-from ..files import INCLUDE_SETS, UnsafePath, resolve_within, safe_extract, stream_zip
+from ..files import INCLUDE_SETS, UnsafePath, resolve_within, safe_extract, write_zip
+from ..files.ziptool import ZipCancelled
 from ..instances import (
     Instance,
     InstanceError,
@@ -407,6 +408,10 @@ def create_app(
         if db is not None:
             with contextlib.suppress(Exception):
                 record(db, actor=actor, action=action, target=target, result=result, detail=detail)
+
+    def session_username(request: web.Request) -> str:
+        session = request.get(SESSION_KEY)
+        return getattr(session, "username", "system")
 
     def client_ip(request: web.Request) -> str:
         if bool(config.get("web.behind_proxy")):
@@ -893,13 +898,7 @@ def create_app(
 
     # ---------- 导出与导入 ----------
 
-    async def export_zip(request: web.Request) -> web.Response:
-        instance_id = request.match_info["id"]
-        try:
-            instance = registry.get(instance_id)
-        except InstanceNotFound:
-            return web.json_response({"ok": False, "error": "实例不存在"}, status=404)
-        raw = request.query.get("include", "world,config,mods")
+    def parse_includes(raw: str) -> list[str]:
         includes: list[str] = []
         for part in raw.split(","):
             key = part.strip()
@@ -907,23 +906,66 @@ def create_app(
                 includes.extend(INCLUDE_SETS[key])
             elif key:
                 includes.append(key)
-        filename = f"{instance.name}-{time.strftime('%Y%m%d-%H%M')}.zip"
-        response = web.StreamResponse(
+        return includes
+
+    async def export_zip(request: web.Request) -> web.Response:
+        """导出改成后台任务，返回 job，前端可看进度并取消。"""
+        instance = registry.get(request.match_info["id"])
+        includes = parse_includes(request.query.get("include", "world,config,mods"))
+        job = jobs.create("export", total=0)
+        target = data_dir / "exports" / f"{job['id']}.zip"
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        def work() -> int:
+            return write_zip(
+                target,
+                instance.root,
+                includes,
+                progress=lambda done, total: jobs.update(
+                    job["id"], done=done, total=total, phase="打包中"
+                ),
+                cancelled=lambda: jobs.cancel_requested(job["id"]),
+            )
+
+        async def run() -> None:
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, work)
+            except ZipCancelled:
+                target.unlink(missing_ok=True)
+                jobs.mark_cancelled(job["id"])
+                return
+            except Exception as exc:  # 打包失败不要静默
+                target.unlink(missing_ok=True)
+                jobs.finish(job["id"], error=str(exc))
+                return
+            size = target.stat().st_size
+            jobs.finish(job["id"], result={"path": str(target), "size": size})
+
+        asyncio.create_task(run())
+        audit(request[SESSION_KEY].username, "export.start", target=instance.id, result="ok")
+        return web.json_response({"ok": True, "job": jobs.get(job["id"])})
+
+    async def export_download(request: web.Request) -> web.Response:
+        job = jobs.get(request.match_info["id"])
+        if job is None or not job.get("finished") or job.get("error"):
+            return web.json_response({"ok": False, "error": "任务未完成"}, status=404)
+        result = job.get("result") or {}
+        path = Path(str(result.get("path", "")))
+        if not path.is_file():
+            return web.json_response({"ok": False, "error": "文件已被清理"}, status=404)
+        filename = f"{path.stem}.zip"
+        return web.FileResponse(
+            path,
             headers={
                 "Content-Type": "application/zip",
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "Cache-Control": "no-store",
-            }
+            },
         )
-        await response.prepare(request)
-        total = 0
-        for chunk in stream_zip(instance.root, includes):
-            if chunk:
-                total += len(chunk)
-                await response.write(chunk)
-        await response.write_eof()
-        audit(request[SESSION_KEY].username, "export", target=instance_id, result="ok", detail=f"{total} bytes")
-        return response
+
+    async def job_cancel(request: web.Request) -> web.Response:
+        ok = jobs.request_cancel(request.match_info["id"])
+        return web.json_response({"ok": ok}, status=200 if ok else 404)
 
     async def import_zip(request: web.Request) -> web.Response:
         instance_id = request.match_info["id"]
@@ -978,14 +1020,47 @@ def create_app(
         instance = registry.get(instance_id)
         payload = await _read_payload(request)
         includes = payload.get("include") or ["world", "config", "mods"]
-        try:
-            entry = await asyncio.get_running_loop().run_in_executor(
-                None, backup_manager.create, instance, list(includes)
+        job = jobs.create("backup", total=0)
+        target = backup_manager.dir_for(instance)
+        target.mkdir(parents=True, exist_ok=True)
+        from ..files import zip_name as make_zip_name
+
+        name = make_zip_name("backup")
+        path = target / name
+
+        def work() -> int:
+            return write_zip(
+                path,
+                instance.root,
+                list(includes),
+                progress=lambda done, total: jobs.update(
+                    job["id"], done=done, total=total, phase="备份中"
+                ),
+                cancelled=lambda: jobs.cancel_requested(job["id"]),
             )
-        except ValueError as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=400)
-        audit(request[SESSION_KEY].username, "backup", target=instance_id, result="ok", detail=entry.name)
-        return web.json_response({"ok": True, "backup": entry.to_dict()})
+
+        async def run() -> None:
+            try:
+                count = await asyncio.get_running_loop().run_in_executor(None, work)
+            except ZipCancelled:
+                path.unlink(missing_ok=True)
+                jobs.mark_cancelled(job["id"])
+                return
+            except Exception as exc:
+                path.unlink(missing_ok=True)
+                jobs.finish(job["id"], error=str(exc))
+                return
+            if count == 0:
+                path.unlink(missing_ok=True)
+                jobs.finish(job["id"], error="没有可备份的文件")
+                return
+            backup_manager.prune(instance)
+            jobs.finish(job["id"], result={"name": name, "size": path.stat().st_size})
+            audit(instance_id and session_username(request), "backup", target=instance_id, result="ok", detail=name)
+
+        asyncio.create_task(run())
+        audit(request[SESSION_KEY].username, "backup.start", target=instance_id, result="ok", detail=name)
+        return web.json_response({"ok": True, "job": jobs.get(job["id"]), "name": name})
 
     async def backups_list(request: web.Request) -> web.Response:
         instance_id = request.match_info["id"]
@@ -1883,6 +1958,8 @@ def create_app(
     app.router.add_patch("/api/instances/{id}", update_instance)
     app.router.add_get("/api/fs/list", fs_list)
     app.router.add_get("/api/jobs/{id}", job_status)
+    app.router.add_post("/api/jobs/{id}/cancel", job_cancel)
+    app.router.add_get("/api/jobs/{id}/download", export_download)
     app.router.add_post("/api/instances/{id}/{action:start|stop|kill}", instance_action)
     app.router.add_get("/api/instances/{id}/log", instance_log)
     app.router.add_post("/api/instances/{id}/command", instance_command)
@@ -1890,7 +1967,7 @@ def create_app(
     app.router.add_get("/api/instances/{id}/file", read_file)
     app.router.add_put("/api/instances/{id}/file", write_file)
     app.router.add_delete("/api/instances/{id}/file", delete_file)
-    app.router.add_get("/api/instances/{id}/export", export_zip)
+    app.router.add_post("/api/instances/{id}/export", export_zip)
     app.router.add_post("/api/instances/{id}/import", import_zip)
     app.router.add_post("/api/instances/{id}/backup", backups_create)
     app.router.add_get("/api/instances/{id}/backups", backups_list)

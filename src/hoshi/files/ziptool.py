@@ -82,20 +82,34 @@ def iter_files(root: Path, includes: Iterable[str] | None = None) -> Iterator[Pa
                 yield item
 
 
+class ZipCancelled(Exception):
+    """打包被调用方取消。"""
+
+
 def write_zip(
     target: Path,
     root: Path,
     includes: Iterable[str] | None = None,
     chunks: list[Path] | None = None,
+    progress=None,
+    cancelled=None,
 ) -> int:
-    """把文件写进 zip，返回条目数。调用方负责把 target 放在实例目录之外。"""
+    """把文件写进 zip，返回条目数。progress(done, total)；cancelled() 返回真就中止。"""
+    files = chunks if chunks is not None else list(iter_files(root, includes))
+    total = len(files)
     count = 0
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
-        for path in chunks if chunks is not None else iter_files(root, includes):
+        for path in files:
+            if cancelled is not None and cancelled():
+                raise ZipCancelled("已取消")
             arcname = path.relative_to(root.resolve()).as_posix()
             archive.write(path, arcname)
             count += 1
+            if progress is not None and count % 20 == 0:
+                progress(count, total)
+    if progress is not None:
+        progress(total, total)
     return count
 
 
