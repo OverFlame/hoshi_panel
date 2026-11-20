@@ -56,7 +56,6 @@ R0 实测：12 项测试通过，冷启动 573 ms，空载 USS 24.3 MB、RSS 43.
 │   └── db.py              SQLite 初始化与审计
 ├── tests/                 单元测试
 ├── docs/                  分析与设计文档（01 到 28）
-├── tools/probes/          只读探针脚本（zip 结构、模组侧别、内存测量等）
 ├── evidence/              上游源码副本，本地保留，不入库
 └── archive/mcsl2-fork/    PyQt 版骨架，历史归档，不入库
 ```
@@ -121,7 +120,7 @@ R0 (config schema, TOML, CLI, SQLite, health check) is done: 12 tests pass, cold
 
 ## Layout
 
-`hoshi/` holds the Python package, `tests/` the unit tests, `docs/` the design notes, `tools/probes/` read-only investigation scripts. `evidence/` and `archive/` are local-only and gitignored.
+`hoshi/` holds the Python package, `tests/` the unit tests, `docs/` the design notes. Investigation probes, `evidence/` and `archive/` are local-only and gitignored.
 
 ## Quick start
 
