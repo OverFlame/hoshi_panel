@@ -4,8 +4,9 @@
 """
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/assets/pico.css">
 <title>{{app}} · {{instance_name}}</title>
 <style>
  :root{color-scheme:dark}
@@ -23,9 +24,6 @@ INDEX_HTML = r"""<!doctype html>
  .state{font-size:.78rem;padding:1px 7px;border-radius:99px;background:#2a2f3a}
  .state.running{background:#17543b;color:#8ff0c0}
  .state.crashed{background:#5a1d1d;color:#ffb4b4}
- button{padding:4px 9px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
- button:hover{border-color:#2f6fed}
- button.primary{background:#2f6fed;border-color:#2f6fed}
  section{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
  .tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid #23262d}
  .tab{padding:4px 10px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer;font-size:.85rem}
@@ -34,9 +32,7 @@ INDEX_HTML = r"""<!doctype html>
  .pane.active{display:flex}
  #console{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0d11}
  #cmd{display:flex;gap:8px;padding:10px;border-top:1px solid #23262d}
- #cmd input{flex:1;padding:8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
  .toolbar{display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #23262d;font-size:.85rem}
- .toolbar input{padding:6px 8px;border-radius:6px;border:1px solid #333;background:#141821;color:#e6e6e6}
  #filelist,#backuplist{flex:1;overflow:auto;padding:0 10px 10px}
  .fitem,.bitem{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid #1c1f26;font-size:.85rem}
  .fitem{cursor:pointer}

@@ -42,4 +42,5 @@ select = ["E", "F", "I", "W", "B", "UP"]
 "src/hoshi/web/index_page.py" = ["E501"]
 "src/hoshi/web/overview_page.py" = ["E501"]
 "src/hoshi/web/font_css.py" = ["E501"]
+"src/hoshi/web/pico_css.py" = ["E501"]
 

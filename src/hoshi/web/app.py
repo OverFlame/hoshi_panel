@@ -95,6 +95,7 @@ from .audit_page import AUDIT_HTML
 from .font_css import FONT_FACE_CSS
 from .index_page import INDEX_HTML
 from .overview_page import OVERVIEW_HTML
+from .pico_css import PICO_CSS
 
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 REGISTRY_KEY: web.AppKey[InstanceRegistry] = web.AppKey("registry", InstanceRegistry)
@@ -112,8 +113,9 @@ PUBLIC_PATHS = {"/login", "/api/login", "/api/health", "/favicon.ico"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 LOGIN_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/assets/pico.css">
 <title>登录 · {{app}}</title>
 <style>
  body{font:14px/1.6 system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#0f1115;color:#e6e6e6}
@@ -140,8 +142,9 @@ LOGIN_HTML = """<!doctype html>
 
 
 SETTINGS_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/assets/pico.css">
 <title>设置 · {{app}}</title>
 <style>
  :root{color-scheme:dark}
@@ -1875,6 +1878,13 @@ def create_app(
 
     # ---------- 其它 ----------
 
+    async def pico_css(_: web.Request) -> web.Response:
+        return web.Response(
+            text=PICO_CSS,
+            content_type="text/css",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     async def health(_: web.Request) -> web.Response:
         return web.json_response(
             {
@@ -1938,6 +1948,7 @@ def create_app(
     app.router.add_get("/i/{id}", instance_page)
     app.router.add_get("/settings", settings_page)
     app.router.add_get("/api/health", health)
+    app.router.add_get("/assets/pico.css", pico_css)
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", post_settings)
     app.router.add_get("/api/settings/history", settings_history)
