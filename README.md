@@ -16,6 +16,9 @@
 | Python、aiohttp | 运行时与 HTTP | PSF、Apache-2.0 |
 | [Modrinth API](https://docs.modrinth.com) | 模组元数据与侧别判定 | 服务条款 |
 | [BMCLAPI](https://bmclapi2.bangbang93.com) | Minecraft 资源镜像 | bangbang93 维护 |
+| [psutil](https://github.com/giampaolo/psutil) | 进程与主机指标 | BSD-3-Clause |
+| [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | 界面等宽字体 | SIL OFL 1.1，全文见 `LICENSES/` |
+| [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) | 字体图标补丁 | 字体 OFL 1.1，脚本 MIT |
 
 ## AI 生成警告 / AI Notice
 

@@ -47,8 +47,24 @@ conduct secondary development based on MCSL2.
 | Python / aiohttp | 运行时与 HTTP | PSF / Apache-2.0 | https://www.python.org、https://docs.aiohttp.org |
 | Modrinth API | 模组元数据与侧别判定 | 服务条款 | https://docs.modrinth.com |
 | BMCLAPI | Minecraft 资源镜像 | 服务条款 | https://bmclapi2.bangbang93.com |
+| psutil | 进程与主机指标（内存、CPU） | BSD-3-Clause | https://github.com/giampaolo/psutil |
+| JetBrains Mono | 界面等宽字体 | SIL OFL 1.1 | https://github.com/JetBrains/JetBrainsMono |
+| Nerd Fonts | 字体图标补丁（产出 JetBrainsMono Nerd Font） | 字体 OFL 1.1，补丁脚本 MIT | https://github.com/ryanoasis/nerd-fonts |
 
 BlueMap 与 CreateTrainWebAPI 不随本仓库分发，由程序在导入实例时按版本矩阵拉取；若你把缓存目录一并分发，需同时附带它们的许可文件。
+
+## 字体的使用与署名
+
+面板界面与控制台使用 JetBrainsMono Nerd Font（由 JetBrains Mono 经 Nerd Fonts 补丁生成）。
+
+| 项 | 内容 |
+|---|---|
+| 许可证 | SIL Open Font License 1.1，全文见 `LICENSES/OFL-1.1-JetBrainsMono.txt` |
+| 版权 | JetBrains Mono：The JetBrains Mono Project Authors；补丁：Ryan L McIntyre |
+| 分发方式 | 随程序附带 `woff2` 子集，未修改字形 |
+| 限制 | 不得单独售卖字体；OFL 与 GPL-3.0 并存，互不影响 |
+
+只做字形子集化不算修改字形，因此可以保留原字体名。如果有人想二次分发改过的字形，必须换名字。
 
 ## 不包含的内容
 
