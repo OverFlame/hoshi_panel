@@ -5,6 +5,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from hoshi.auth import hash_password
@@ -328,3 +329,29 @@ async def test_fs_list(tmp_path):
         with_files = await client.get(f"/api/fs/list?path={root}&files=1&suffix=.jar")
         names2 = {entry["name"] for entry in (await with_files.json())["entries"]}
         assert "server.jar" in names2
+
+
+async def test_upload_mod_file(tmp_path):
+    app, _, _, instance, root = make_app(tmp_path)
+    payload = fabric_jar("*")
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        form = FormData()
+        form.add_field("file", payload, filename="new-mod.jar", content_type="application/java-archive")
+        form.add_field("file", b"not a jar", filename="readme.txt", content_type="text/plain")
+        resp = await client.post(
+            f"/api/instances/{instance.id}/mods/upload", data=form, headers=h(csrf)
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert "new-mod.jar" in body["saved"]
+        assert any("jar" in item for item in body["skipped"])
+        assert (root / "mods" / "new-mod.jar").is_file()
+
+        again = FormData()
+        again.add_field("file", payload, filename="new-mod.jar", content_type="application/java-archive")
+        dup = await client.post(
+            f"/api/instances/{instance.id}/mods/upload", data=again, headers=h(csrf)
+        )
+        assert dup.status == 400
+        assert any("已存在" in item for item in (await dup.json())["skipped"])

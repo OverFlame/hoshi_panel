@@ -105,7 +105,7 @@ body{font-size:.85rem}
     <div id="filelist"></div>
   </div>
   <div class="pane" id="pane-mods">
-    <div class="toolbar"><button id="mods-refresh">刷新</button>
+    <div class="toolbar"><button id="mods-upload">上传模组</button><button id="mods-refresh">刷新</button>
       <label class="muted"><input type="checkbox" id="mods-lookup" checked> 在线查侧别</label>
       <span class="muted" id="mods-summary"></span></div>
     <div id="modlist"></div>
@@ -528,6 +528,28 @@ async function loadMods(){
     box.appendChild(div);
   }
 }
+$('mods-upload').onclick=()=>{
+  if(!state.current)return;
+  const input=document.createElement('input'); input.type='file'; input.accept='.jar'; input.multiple=true;
+  input.onchange=async()=>{
+    const files=Array.from(input.files||[]); if(!files.length)return;
+    const form=new FormData(); files.forEach(f=>form.append('file',f,f.name));
+    showProgress('上传模组 0%',0,false);
+    const xhr=new XMLHttpRequest(); xhr.open('POST',`/api/instances/${state.current}/mods/upload`);
+    xhr.setRequestHeader('X-CSRF-Token',csrf);
+    xhr.upload.onprogress=e=>{ if(e.lengthComputable) showProgress(`上传模组 ${Math.round(e.loaded*100/e.total)}%`, e.loaded*100/e.total, false) };
+    xhr.onload=()=>{
+      hideProgress();
+      let d={}; try{ d=JSON.parse(xhr.responseText) }catch(_){}
+      if(xhr.status!==200){ toast(d.error||('上传失败 '+xhr.status),'error'); return }
+      toast('已上传 '+d.saved.length+' 个模组'+(d.skipped&&d.skipped.length?('，跳过 '+d.skipped.length+' 个'):''),'ok');
+      loadMods();
+    };
+    xhr.onerror=()=>{ hideProgress(); toast('上传失败','error') };
+    xhr.send(form);
+  };
+  input.click();
+};
 $('mods-refresh').onclick=loadMods;
 $('mods-lookup').onchange=loadMods;
 

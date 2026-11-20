@@ -118,7 +118,14 @@ LOGIN_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · {{app}}</title>
 <style>
- body{font:14px/1.6 system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#0f1115;color:#e6e6e6}
+ :root{color-scheme:dark}
+ body{font:14px/1.6 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0;background:#0f1115;color:#e6e6e6}
+ input{font:inherit;-webkit-text-fill-color:#e6e6e6}
+ input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{
+   -webkit-text-fill-color:#e6e6e6;
+   box-shadow:0 0 0 1000px #0f1115 inset;
+   transition:background-color 99999s ease-in-out 0s}
+ input:focus{outline:2px solid #2f6fed;outline-offset:1px}
  form{background:#171a21;padding:28px;border-radius:10px;width:320px;box-shadow:0 8px 30px #0006}
  h1{font-size:1.1rem;margin:0 0 16px}
  label{display:block;margin:10px 0 4px;font-size:.85rem;opacity:.75}
@@ -1256,6 +1263,52 @@ def create_app(
             }
         )
 
+    async def upload_mod(request: web.Request) -> web.Response:
+        instance = registry.get(request.match_info["id"])
+        mods_dir = instance.root / "mods"
+        mods_dir.mkdir(parents=True, exist_ok=True)
+        limit = int(config.get("files.max_upload_mb")) * 1024 * 1024
+        reader = await request.multipart()
+        saved: list[str] = []
+        skipped: list[str] = []
+        while True:
+            field = await reader.next()
+            if field is None:
+                break
+            if field.name != "file":
+                continue
+            filename = Path(str(field.filename or "")).name
+            lowered = filename.lower()
+            if not (lowered.endswith(".jar") or lowered.endswith(".jar.disabled")):
+                skipped.append(f"{filename}: 只接受 jar")
+                await field.read()
+                continue
+            target = mods_dir / filename
+            if target.exists():
+                skipped.append(f"{filename}: 已存在")
+                await field.read()
+                continue
+            written = 0
+            with target.open("wb") as fh:
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > limit:
+                        fh.close()
+                        target.unlink(missing_ok=True)
+                        return web.json_response(
+                            {"ok": False, "error": f"超过上传上限 {limit // (1024 * 1024)} MB"}, status=413
+                        )
+                    fh.write(chunk)
+            saved.append(filename)
+        if not saved:
+            return web.json_response({"ok": False, "error": "没有可用的模组文件", "skipped": skipped}, status=400)
+        audit(request[SESSION_KEY].username, "mods.upload", target=instance.id, result="ok",
+              detail=", ".join(saved[:8]))
+        return web.json_response({"ok": True, "saved": saved, "skipped": skipped})
+
     async def toggle_mod_handler(request: web.Request) -> web.Response:
         instance_id = request.match_info["id"]
         instance = registry.get(instance_id)
@@ -2048,6 +2101,7 @@ def create_app(
     app.router.add_post("/api/packs/import", import_pack)
     app.router.add_get("/api/instances/{id}/mods", list_mods)
     app.router.add_post("/api/instances/{id}/mods/toggle", toggle_mod_handler)
+    app.router.add_post("/api/instances/{id}/mods/upload", upload_mod)
     app.router.add_get("/api/instances/{id}/properties", get_properties)
     app.router.add_put("/api/instances/{id}/properties", put_properties)
     app.router.add_post("/api/instances/{id}/migrate", migrate_instance)
