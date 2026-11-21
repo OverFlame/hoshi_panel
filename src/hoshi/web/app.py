@@ -89,6 +89,7 @@ from ..map import (
 from ..map import (
     write_markers as write_bluemap_markers,
 )
+from ..map.configgen import MapOptions
 from ..metrics import MetricsSampler
 from ..mods import ModrinthClient, apply_lookup, scan_mods
 from ..mods import toggle as toggle_mod
@@ -1648,6 +1649,13 @@ def create_app(
     def map_flag(instance: Instance | None, key: str):
         return resolve(config, instance, key)[0]
 
+    def map_options(instance: Instance) -> MapOptions:
+        def getter(key: str, default):
+            value = resolve(config, instance, key)[0]
+            return default if value is None else value
+
+        return MapOptions.from_settings(getter)
+
     async def map_status(request: web.Request) -> web.Response:
         instance_id = request.query.get("instance", "")
         instances = registry.all()
@@ -1705,7 +1713,9 @@ def create_app(
     def apply_markers(instance: Instance) -> dict[str, object]:
         """把标记写进 BlueMap 配置；服端在跑就顺手 reload。"""
         try:
-            path = write_bluemap_markers(instance.root, data_dir, markers.list(instance.name))
+            path = write_bluemap_markers(
+                instance.root, data_dir, markers.list(instance.name), options=map_options(instance)
+            )
         except FileNotFoundError:
             return {"applied": False, "reason": "先生成地图配置", "path": ""}
         except OSError as exc:
@@ -1779,6 +1789,7 @@ def create_app(
             mc_version=str(payload.get("mc_version", "1.20.1")),
             accept_download=bool(map_flag(instance, "map.accept_download")),
             threads=int(map_flag(instance, "map.render_threads")),
+            options=map_options(instance),
         )
         installed = False
         cached = find_cached(data_dir, result.asset)
@@ -1994,6 +2005,7 @@ def create_app(
                     mc_version=mc_version,
                     accept_download=bool(map_flag(instance, "map.accept_download")),
                     threads=int(map_flag(instance, "map.render_threads")),
+                    options=map_options(instance),
                 )
                 jobs.finish(
                     job["id"],

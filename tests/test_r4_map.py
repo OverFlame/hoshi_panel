@@ -468,3 +468,59 @@ async def wait_job(client, job_id: str, timeout: float = 15.0) -> dict:
             return data
         await asyncio.sleep(0.05)
     raise AssertionError("job 超时")
+
+
+def test_configgen_writes_all_keys(tmp_path):
+    from hoshi.map.configgen import MapOptions, write_all
+
+    root = tmp_path / "server"
+    for world in ("world", "world_nether", "world_the_end"):
+        (root / world).mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    options = MapOptions(
+        accept_download=True,
+        render_threads=2,
+        update_cooldown=120,
+        compression="zstd",
+        hires_enabled=False,
+        render_radius=3000,
+        remove_caves_below_y=40,
+        min_inhabited_time=20,
+    )
+    written = write_all(root, data_dir, options)
+
+    core = written["core"].read_text(encoding="utf-8")
+    for key in (
+        "accept-download: true",
+        "render-thread-count: 2",
+        "update-cooldown: 120",
+        "full-update-interval",
+        "region-file-check-interval",
+        "scan-for-mod-resources",
+        "metrics",
+    ):
+        assert key in core, key
+
+    storage = written["storage"].read_text(encoding="utf-8")
+    assert "storage-type: file" in storage
+    assert "compression: zstd" in storage
+
+    assert "port: 8100" in written["webserver"].read_text(encoding="utf-8")
+    assert "default-to-flat-view" in written["webapp"].read_text(encoding="utf-8")
+
+    overworld = written["overworld"].read_text(encoding="utf-8")
+    for key in (
+        "remove-caves-below-y: 40",
+        "min-inhabited-time: 20",
+        "enable-hires: false",
+        "render-mask: [",
+        "min-x: -3000",
+        "enable-perspective-view",
+        "enable-flat-view",
+        "enable-free-flight-view",
+        "render-edges",
+        "edge-light-strength",
+        "marker-sets",
+        "storage: ",
+    ):
+        assert key in overworld, key

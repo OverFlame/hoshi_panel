@@ -87,6 +87,28 @@ def write_config(
     accept_download: bool = False,
     threads: int = 1,
     cooldown: int = 180,
+    options=None,
+) -> BlueMapPlan:
+    from .configgen import MapOptions, write_all
+
+    if options is None:
+        options = MapOptions(
+            accept_download=accept_download,
+            render_threads=max(1, threads),
+            update_cooldown=max(10, cooldown),
+        )
+    write_all(instance_root, data_dir, options)
+    result = plan(instance_root, data_dir, mc_version)
+    return result
+
+
+def _legacy_write_config(
+    instance_root: Path,
+    data_dir: Path,
+    mc_version: str = DEFAULT_MC,
+    accept_download: bool = False,
+    threads: int = 1,
+    cooldown: int = 180,
 ) -> BlueMapPlan:
     result = plan(instance_root, data_dir, mc_version)
     result.config_dir.mkdir(parents=True, exist_ok=True)
@@ -188,16 +210,20 @@ def _num(value: object) -> str:
         return "0"
 
 
-def write_markers(instance_root: Path, data_dir: Path, markers: list[dict[str, object]]) -> Path:
+def write_markers(
+    instance_root: Path,
+    data_dir: Path,
+    markers: list[dict[str, object]],
+    options=None,
+) -> Path:
     """把标记写进主世界地图配置，并准备图标。返回被改写的文件。"""
+    from .configgen import MapOptions, write_all
+
     write_marker_icons(data_dir)
     target = instance_root / "config" / "bluemap" / "maps" / "overworld.conf"
     if not target.is_file():
         raise FileNotFoundError("先生成地图配置")
-    base = target.read_text(encoding="utf-8")
-    # 去掉旧的标记集，再追加，重复调用不会叠加
-    base = base.split("\nhoshi-panel: {")[0].rstrip() + "\n"
-    target.write_text(base + marker_set_block(markers), encoding="utf-8")
+    write_all(instance_root, data_dir, options or MapOptions(), markers)
     return target
 
 
