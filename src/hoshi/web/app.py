@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import secrets
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -1761,6 +1762,27 @@ def create_app(
         audit(request[SESSION_KEY].username, "marker.add", target=instance.name, result="ok", detail=marker["name"])
         return web.json_response({"ok": True, "marker": marker, "bluemap": applied})
 
+    async def map_purge(request: web.Request) -> web.Response:
+        """删除已渲染的瓦片与数据，按钮需二次确认。"""
+        payload = await _read_payload(request)
+        if str(payload.get("confirm", "")) != "清理":
+            return web.json_response({"ok": False, "error": "需要确认：确认框里输入「清理」"}, status=400)
+        root = data_dir / "bluemap"
+        freed = 0
+        for sub in ("web/maps", "data"):
+            target = root / sub
+            if not target.exists():
+                continue
+            for item in target.rglob("*"):
+                try:
+                    if item.is_file():
+                        freed += item.stat().st_size
+                except OSError:
+                    continue
+            await asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, target, True)
+        audit(request[SESSION_KEY].username, "map.purge", target=str(root), result="ok", detail=f"{freed} bytes")
+        return web.json_response({"ok": True, "freed_mb": round(freed / (1 << 20), 1)})
+
     async def map_apply_markers(request: web.Request) -> web.Response:
         instance = registry.get(request.match_info["id"])
         result = apply_markers(instance)
@@ -2494,6 +2516,7 @@ def create_app(
     app.router.add_get("/api/map/players", map_players)
     app.router.add_post("/api/instances/{id}/map/markers/apply", map_apply_markers)
     app.router.add_post("/api/instances/{id}/map/install", map_install)
+    app.router.add_post("/api/instances/{id}/map/purge", map_purge)
     app.router.add_route("*", "/api/instances/{id}/rcon", rcon_settings)
     app.router.add_post("/api/instances/{id}/map/poll", map_poll_start)
     app.router.add_route("*", "/api/map/markers", map_markers)

@@ -113,6 +113,7 @@ body{font-size:.85rem}
     <div class="toolbar">
       <button id="map-open">打开地图</button>
       <button id="map-install">安装 BlueMap</button>
+      <button id="map-purge">清理已渲染瓦片</button>
       <button id="map-share">生成共享链接</button>
       <button id="map-refresh">刷新</button>
       <span class="muted" id="map-status"></span>
@@ -298,6 +299,16 @@ async function loadMap(){
   }
 }
 $('map-refresh').onclick=loadMap;
+$('map-purge').onclick=async()=>{
+  if(!state.current)return;
+  if(!confirm('会删除已渲染的地图瓦片与数据，世界文件不受影响。下次启动需要重新渲染。继续？'))return;
+  const word=prompt('输入「清理」确认');
+  if(word!=='清理'){ toast('已取消','info'); return }
+  const r=await fetch(`/api/instances/${state.current}/map/purge`,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({confirm:'清理'})});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'清理失败','error'); return }
+  toast('已清理，释放约 '+d.freed_mb+' MB','ok'); loadMap();
+};
 
 $('map-install').onclick=async()=>{
   if(!state.current)return;
