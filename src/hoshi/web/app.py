@@ -146,16 +146,7 @@ body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 </style>
 <link rel="stylesheet" href="/assets/tabler.css">
 <link rel="stylesheet" href="/assets/custom.css">
-<style>
-body{background:#0b0e13;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0}
-form{background:#151a22;border:1px solid #232a35;padding:26px;border-radius:12px;width:320px;box-shadow:0 12px 40px #0008}
-h1{font-size:1.05rem;margin:0 0 14px;color:#e6e6e6}
-label{display:block;margin:10px 0 4px;font-size:.82rem;color:#c9d1d9;opacity:1}
-input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6;font:inherit}
-button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.92rem;cursor:pointer}
-.err{color:#ff8a8a;margin-top:10px;font-size:.82rem;min-height:1em}
-.hint{color:#7d8695;font-size:.76rem;margin-top:8px}
-</style></head>
+</head>
 <body>
 <form method="post" action="/api/login">
   <h1>{{app}} 登录</h1>
@@ -167,26 +158,40 @@ button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;backgro
   <div class="hint">忘记密码：在服务器上运行 hoshi reset-password</div>
 </form>
 </body></html>
+<style>
+body{background:#0b0e13;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0}
+form{background:#151a22;border:1px solid #232a35;padding:26px;border-radius:12px;width:320px;box-shadow:0 12px 40px #0008}
+h1{font-size:1.05rem;margin:0 0 14px;color:#e6e6e6}
+label{display:block;margin:10px 0 4px;font-size:.82rem;color:#c9d1d9;opacity:1}
+input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6;font:inherit}
+button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.92rem;cursor:pointer}
+.err{color:#ff8a8a;margin-top:10px;font-size:.82rem;min-height:1em}
+.hint{color:#7d8695;font-size:.76rem;margin-top:8px}
+</style>
 """
 
 
 SETTINGS_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="zh-CN" data-bs-theme="{{theme}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>设置 · {{app}}</title>
 <style>
  :root{color-scheme:dark}
  body{margin:0;font:14px/1.6 system-ui,sans-serif;background:#0f1115;color:#e6e6e6}
- header{display:flex;justify-content:space-between;padding:12px 18px;border-bottom:1px solid #23262d}
+ header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid #23262d}
  h2{font-size:.95rem;margin:24px 0 8px;color:#9db4d0}
  main{max-width:900px;padding:0 18px 60px}
  .item{border:1px solid #23262d;border-radius:8px;padding:12px;margin-bottom:10px}
- .item .top{display:flex;justify-content:space-between;gap:10px}
+ .item .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+ .item .top>.meta{display:flex;align-items:center;gap:8px;flex:0 0 auto}
  .key{font-family:ui-monospace,monospace;font-size:.78rem;opacity:.6}
  .why{font-size:.8rem;opacity:.7;margin-top:2px}
  .row{display:flex;gap:10px;align-items:center;margin-top:8px}
  input,select{background:#141821;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 8px;min-width:220px}
- .tag{font-size:.72rem;padding:1px 6px;border-radius:99px;background:#2a2f3a}
+ .tag{font-size:.72rem;line-height:1.6;padding:2px 8px;border-radius:99px;background:#232a35;color:#a9b3c2;border:1px solid #2a3140;white-space:nowrap}
+ .tag.high{background:#3d1616;color:#ffb4b4;border-color:#5a2020}
+ .tag.medium{background:#3a2f10;color:#ffd28a;border-color:#4d3d16}
+ .tag.source{background:#1a2230;color:#9db4d0}
  .tag.high{background:#5a1d1d;color:#ffb8b8}
  .tag.medium{background:#4a3a12;color:#ffd28a}
  button{padding:7px 14px;border-radius:6px;border:1px solid #333;background:#1b1f27;color:#e6e6e6;cursor:pointer}
@@ -206,18 +211,10 @@ body{font-size:.85rem;font-family:var(--tblr-font-sans-serif)}
 </style>
 <link rel="stylesheet" href="/assets/tabler.css">
 <link rel="stylesheet" href="/assets/custom.css">
-<style>
-body{background:#0b0e13;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;min-height:100dvh;margin:0}
-form{background:#151a22;border:1px solid #232a35;padding:26px;border-radius:12px;width:320px;box-shadow:0 12px 40px #0008}
-h1{font-size:1.05rem;margin:0 0 14px;color:#e6e6e6}
-label{display:block;margin:10px 0 4px;font-size:.82rem;color:#c9d1d9;opacity:1}
-input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6;font:inherit}
-button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:.92rem;cursor:pointer}
-.err{color:#ff8a8a;margin-top:10px;font-size:.82rem;min-height:1em}
-.hint{color:#7d8695;font-size:.76rem;margin-top:8px}
-</style></head>
+</head>
 <body>
-<header><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1><div><a href="/">返回</a> <a href="/audit">审计</a></div></header>
+<header class="topbar"><h1 style="font-size:1rem;margin:0">{{app}} 设置</h1>
+<div style="display:flex;gap:14px;align-items:center"><a href="/">返回</a><a href="/audit">审计</a></div></header>
 <main>
 <h2>bot 令牌</h2>
 <div class="item">
@@ -259,9 +256,34 @@ button{margin-top:16px;width:100%;padding:9px;border:0;border-radius:6px;backgro
 <div class="row"><button class="primary" id="save">保存改动</button><span class="muted">危险项保存后可能要求重启</span></div>
 <div id="msg"></div>
 </main>
+
+<style>
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid #23262d;background:transparent}
+main{max-width:960px;margin:0 auto;padding:8px 16px 48px;width:100%;box-sizing:border-box}
+h2{font-size:.82rem;color:#8a93a3;letter-spacing:.04em;margin:22px 0 8px}
+.item{background:#131820;border:1px solid #1f2530;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.item .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.item .why{color:#8a93a3;font-size:.8rem;margin-top:4px}
+.item .row{display:flex;gap:8px;align-items:center;margin-top:10px}
+.item .row input,.item .row select{flex:1;min-width:0;width:auto;margin:0}
+.item .row button{flex:0 0 auto;width:auto}
+.tag{font-size:.72rem;line-height:1.6;padding:2px 8px;border-radius:99px;background:#232a35;color:#a9b3c2;border:1px solid #2a3140;white-space:nowrap}
+.tag.high{background:#3d1616;color:#ffb4b4;border-color:#5a2020}
+.tag.medium{background:#3a2f10;color:#ffd28a;border-color:#4d3d16}
+.tag.source{background:#1a2230;color:#9db4d0}
+.key{font-family:ui-monospace,monospace;font-size:.75rem;color:#6f7a8a}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 18px;border-bottom:1px solid #23262d;background:#0d1015}
+.topbar a{color:#9db4d0;text-decoration:none;font-size:.88rem}
+.topbar a:hover{color:#8ab4ff}
+</style>
+
+
 <script>
 const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
 let items=[];
+function sourceName(src){
+  return {instance:'本实例', global:'全局配置文件', file:'配置文件', default:'默认'}[src]||src;
+}
 function render(){
   const box=document.getElementById('items'); box.innerHTML='';
   let group='';
@@ -271,7 +293,7 @@ function render(){
     const risk=it.risk==='low'?'':'<span class="tag '+it.risk+'">'+it.risk+'</span>';
     const restart=it.restart?'<span class="tag">重启生效</span>':'';
     div.innerHTML=`<div class="top"><div><b>${it.label}</b> <span class="key">${it.key}</span></div>
-      <div>${risk} ${restart} <span class="tag">${it.source}</span></div></div>
+      <div class="meta">${risk}${restart}<span class="tag source">${sourceName(it.source)}</span></div></div>
       <div class="why">${it.summary} ${it.why||''}</div>`;
     const row=document.createElement('div'); row.className='row';
     let input;
@@ -396,6 +418,11 @@ document.getElementById('pw-save').onclick=async()=>{
   if(r.ok){document.getElementById('pw-old').value='';document.getElementById('pw-new').value=''}
 };
 authStatus();
+function unifyButtons(){
+  document.querySelectorAll('button').forEach(b=>{ if(!b.classList.contains('btn')) b.classList.add('btn','btn-sm') });
+}
+new MutationObserver(unifyButtons).observe(document.body,{childList:true,subtree:true});
+unifyButtons();
 load();
 </script>
 </body></html>
