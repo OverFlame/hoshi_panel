@@ -68,8 +68,7 @@ body{font-size:.85rem}
 <body>
 <header><h1><a href="/">← 概览</a> · {{instance_name}}</h1>
 <div style="display:flex;gap:10px;align-items:center">
-  <a href="#" id="import-pack">导入整合包</a>
-  <a href="/settings">设置</a><a href="/audit">审计</a>
+    <a href="/settings">设置</a><a href="/audit">审计</a>
   <span class="muted">{{user}}</span>
   <button id="logout">退出</button>
 </div></header>
@@ -615,22 +614,7 @@ $('export').onclick=async()=>{
   });
 };
 
-$('import-pack').onclick=async(e)=>{
-  e.preventDefault();
-  const input=document.createElement('input'); input.type='file'; input.accept='.zip';
-  input.onchange=async()=>{
-    const file=input.files[0]; if(!file)return;
-    const name=prompt('新实例名（目录名）', file.name.replace(/\\.zip$/i,''));
-    if(!name)return;
-    const form=new FormData(); form.append('name',name); form.append('file',file);
-    const r=await fetch('/api/packs/import',{method:'POST',headers:H,body:form});
-    const d=await r.json();
-    if(!r.ok){alert(d.error||'导入失败');return}
-    alert('已导入：'+d.instance.name+ (d.skipped&&d.skipped.length?('\\n跳过 '+d.skipped.length+' 项'):''));
-    refresh();
-  };
-  input.click();
-};
+
 
 if(state.current){ select(state.current) }
 setInterval(refresh,4000);

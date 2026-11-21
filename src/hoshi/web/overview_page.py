@@ -51,9 +51,17 @@ body{font-size:.85rem}
 <body>
 <header>
   <h1>{{app}}</h1>
-  <div><a href="/settings">设置</a><a href="/audit">审计</a><span class="muted"> {{user}}</span>
+  <div style="display:flex;align-items:center;gap:14px"><button id="import-pack" class="btn btn-sm btn-primary">导入整合包</button><a href="/settings">设置</a><a href="/audit">审计</a><span class="muted">{{user}}</span>
     <button id="logout" style="margin-left:12px">退出</button></div>
 </header>
+<div id="progress" style="display:none;padding:6px 22px;background:#101821;border-bottom:1px solid #1e232c;font-size:.8rem">
+  <div style="display:flex;justify-content:space-between;gap:10px"><span id="progress-text"></span>
+  <button id="progress-cancel" class="btn btn-sm" style="display:none">取消</button></div>
+  <div style="height:5px;background:#1b2230;border-radius:99px;margin-top:4px;overflow:hidden">
+    <div id="progress-bar" style="height:100%;width:0;background:#2f6fed;transition:width .2s"></div>
+  </div>
+</div>
+<div id="toasts" style="position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:60"></div>
 <main>
   <div class="cards">
     <div class="card"><div class="k">服务器</div><div class="v" id="m-inst">-</div><div class="s" id="m-inst-s">运行 0</div></div>
@@ -144,6 +152,55 @@ async function refreshAll(){
   if(inst&&met) await fillMeta(inst.instances, met);
   loadEvents();
 }
+function toast(text, kind){
+  const box=$('toasts'); const div=document.createElement('div');
+  const color=kind==='error'?'#ff8a8a':kind==='ok'?'#8ff0c0':'#dfe5ee';
+  div.style.cssText=`background:#151b24;border:1px solid #2a3140;border-left:3px solid ${color};color:${color};padding:8px 12px;border-radius:8px;font-size:.85rem;max-width:360px;box-shadow:0 6px 20px #0007`;
+  div.textContent=text; box.appendChild(div);
+  setTimeout(()=>div.remove(), kind==='error'?6000:3500);
+}
+let currentJob=null;
+function showProgress(text, pct, cancellable){
+  $('progress').style.display='block'; $('progress-text').textContent=text;
+  $('progress-bar').style.width=(pct>=0?pct:0)+'%';
+  $('progress-cancel').style.display=cancellable?'':'none';
+}
+function hideProgress(){ $('progress').style.display='none'; $('progress-bar').style.width='0'; currentJob=null }
+$('progress-cancel').onclick=async()=>{ if(currentJob){ await fetch('/api/jobs/'+currentJob+'/cancel',{method:'POST',headers:H}); toast('已请求取消','info') } };
+async function pollJob(id, onDone){
+  currentJob=id;
+  while(true){
+    const r=await fetch('/api/jobs/'+id); if(!r.ok)return;
+    const job=await r.json();
+    showProgress(`${job.phase} ${job.total?`(${job.done}/${job.total})`:''}`, job.percent||0, true);
+    if(job.finished){ hideProgress(); onDone(job); return }
+    await new Promise(r=>setTimeout(r,400));
+  }
+}
+$('import-pack').onclick=()=>{
+  const input=document.createElement('input'); input.type='file'; input.accept='.zip';
+  input.onchange=async()=>{
+    const file=input.files[0]; if(!file)return;
+    const name=prompt('新实例名（目录名）', file.name.replace(/\.zip$/i,''));
+    if(!name)return;
+    const form=new FormData(); form.append('name',name); form.append('file',file);
+    showProgress('上传中 0%',0,false);
+    const xhr=new XMLHttpRequest(); xhr.open('POST','/api/packs/import');
+    xhr.setRequestHeader('X-CSRF-Token',csrf);
+    xhr.upload.onprogress=e=>{ if(e.lengthComputable) showProgress(`上传中 ${Math.round(e.loaded*100/e.total)}%`, e.loaded*100/e.total, false) };
+    xhr.onload=async()=>{
+      let d={}; try{ d=JSON.parse(xhr.responseText) }catch(_){}
+      if(xhr.status!==200){ hideProgress(); toast(d.error||('导入失败 '+xhr.status),'error'); return }
+      if(d.job&&d.job.id) await pollJob(d.job.id, ()=>{});
+      else hideProgress();
+      toast('已导入：'+d.instance.name+(d.skipped&&d.skipped.length?('，跳过 '+d.skipped.length+' 项'):''),'ok');
+      refreshAll();
+    };
+    xhr.onerror=()=>{ hideProgress(); toast('上传失败','error') };
+    xhr.send(form);
+  };
+  input.click();
+};
 $('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:H});location.href='/login'};
 refreshAll(); setInterval(refreshAll,5000);
 
