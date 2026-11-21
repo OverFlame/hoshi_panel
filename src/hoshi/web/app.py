@@ -2048,6 +2048,154 @@ def create_app(
               detail=f"enable={enable} port={port}")
         return web.json_response({"ok": True, "hint": "重启服务器后生效"})
 
+
+    # ---------- 导入整合包：三种方式 ----------
+
+    def remote_import_state() -> dict[str, object]:
+        public = str(config.get("web.exposure")) == "public" and bool(config.get("auth.totp_enabled"))
+        return {
+            "enabled": public,
+            "reason": "" if public else "未开放公网不可使用",
+            "how": "设置里把「公网暴露」改为 public，填写确认短语，并开启两步验证，然后重启面板。",
+            "risk": "开放公网意味着面板登录页对整个互联网可见。远程导入会由服务器代替你去下载任意地址的文件，"
+                    "请只在你能控制访问范围时使用，并确保密码足够强、已开两步验证。",
+        }
+
+    async def pack_options(_: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "adopt": {"enabled": True, "summary": "直接接管服务器上已有的服务端目录，不复制文件"},
+                "zip": {"enabled": True, "summary": "上传本机的 zip 整合包"},
+                "remote": remote_import_state(),
+            }
+        )
+
+    async def adopt_pack(request: web.Request) -> web.Response:
+        payload = await _read_payload(request)
+        raw = str(payload.get("directory", "")).strip()
+        if not raw:
+            return web.json_response({"ok": False, "error": "缺少目录"}, status=400)
+        target = Path(raw).expanduser().resolve()
+        if not target.is_dir():
+            return web.json_response({"ok": False, "error": "目录不存在"}, status=404)
+        existing = registry.find_by_directory(str(target))
+        if existing is not None:
+            return web.json_response({"ok": False, "error": f"已注册：{existing.name}"}, status=409)
+        detected = detect(target)
+        if not detected.ok:
+            return web.json_response(
+                {"ok": False, "error": "识别失败：没有找到核心 jar 或 args 文件"}, status=422
+            )
+        name = str(payload.get("name") or target.name)
+        java = str(payload.get("java") or "")
+        if not java:
+            found = await asyncio.get_running_loop().run_in_executor(None, scan)
+            chosen = pick_for(detected.mc_version or "1.20.1", found) or (found[0] if found else None)
+            java = chosen.path if chosen else ""
+        try:
+            instance = Instance.new(
+                name=name,
+                directory=str(target),
+                launch_mode=detected.launch_mode,
+                jar=detected.jar,
+                args_file=detected.args_file,
+                user_jvm_args=detected.user_jvm_args,
+                java=java,
+                min_memory_mb=2048,
+                max_memory_mb=8192,
+            )
+            registry.add(instance)
+        except InstanceError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        audit(request[SESSION_KEY].username, "pack.adopt", target=instance.id, result="ok", detail=name)
+        return web.json_response({"ok": True, "instance": instance.to_dict(), "detected": detected.summary()})
+
+    async def import_url(request: web.Request) -> web.Response:
+        state = remote_import_state()
+        if not state["enabled"]:
+            return web.json_response(
+                {"ok": False, "error": state["reason"], "how": state["how"], "risk": state["risk"]},
+                status=403,
+            )
+        payload = await _read_payload(request)
+        url = str(payload.get("url", "")).strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return web.json_response({"ok": False, "error": "只接受 http 或 https 地址"}, status=400)
+        name = str(payload.get("name", "")).strip() or f"pack-{int(time.time())}"
+        servers_dir = Path(str(config.get("app.servers_dir"))).expanduser().resolve()
+        target = servers_dir / name
+        if target.exists():
+            return web.json_response({"ok": False, "error": "目标目录已存在"}, status=409)
+
+        limit = int(config.get("files.max_upload_mb")) * 1024 * 1024
+        job = jobs.create("remote-import", total=0)
+        upload_dir = data_dir / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        temp = upload_dir / f"{uuid.uuid4().hex}.zip"
+
+        async def run() -> None:
+            try:
+                jobs.update(job["id"], phase="下载中")
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=600, connect=15)
+                ) as session:
+                    async with session.get(url, headers={"User-Agent": "hoshi-panel/0.1"}) as resp:
+                        if resp.status != 200:
+                            jobs.finish(job["id"], error=f"下载失败：HTTP {resp.status}")
+                            return
+                        total = int(resp.headers.get("Content-Length") or 0)
+                        written = 0
+                        with temp.open("wb") as fh:
+                            async for chunk in resp.content.iter_chunked(1 << 16):
+                                written += len(chunk)
+                                if written > limit:
+                                    fh.close()
+                                    temp.unlink(missing_ok=True)
+                                    jobs.finish(job["id"], error=f"超过上限 {limit // (1024 * 1024)} MB")
+                                    return
+                                fh.write(chunk)
+                                jobs.update(job["id"], done=written, total=total or written, phase="下载中")
+                jobs.update(job["id"], phase="解压中")
+                target.mkdir(parents=True, exist_ok=True)
+                skipped = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: safe_extract(
+                        temp,
+                        target,
+                        progress=lambda done, total: jobs.update(
+                            job["id"], done=done, total=total, phase="解压中"
+                        ),
+                    ),
+                )
+                temp.unlink(missing_ok=True)
+                jobs.update(job["id"], phase="识别中")
+                detected = detect(target)
+                if not detected.ok:
+                    jobs.finish(job["id"], error="识别失败，需要手动添加实例")
+                    return
+                found = await asyncio.get_running_loop().run_in_executor(None, scan)
+                chosen = pick_for(detected.mc_version or "1.20.1", found) or (found[0] if found else None)
+                instance = Instance.new(
+                    name=name,
+                    directory=str(target),
+                    launch_mode=detected.launch_mode,
+                    jar=detected.jar,
+                    args_file=detected.args_file,
+                    user_jvm_args=detected.user_jvm_args,
+                    java=chosen.path if chosen else "",
+                    min_memory_mb=2048,
+                    max_memory_mb=8192,
+                )
+                registry.add(instance)
+                jobs.finish(job["id"], result={"instance": instance.to_dict(), "skipped": skipped})
+                audit("system", "pack.import_url", target=instance.id, result="ok", detail=url[:80])
+            except Exception as exc:
+                temp.unlink(missing_ok=True)
+                jobs.finish(job["id"], error=str(exc))
+
+        asyncio.create_task(run())
+        return web.json_response({"ok": True, "job": jobs.get(job["id"])})
+
     async def ws_console(request: web.Request) -> web.WebSocketResponse:
         origin = request.headers.get("Origin")
         if origin and not _same_origin(origin, request):
@@ -2240,6 +2388,9 @@ def create_app(
     app.router.add_post("/api/instances/{id}/backups/{name}/restore", backups_restore)
     app.router.add_delete("/api/instances/{id}/backups/{name}", backups_delete)
     app.router.add_post("/api/packs/import", import_pack)
+    app.router.add_get("/api/packs/import-options", pack_options)
+    app.router.add_post("/api/packs/adopt", adopt_pack)
+    app.router.add_post("/api/packs/import-url", import_url)
     app.router.add_get("/api/instances/{id}/mods", list_mods)
     app.router.add_post("/api/instances/{id}/mods/toggle", toggle_mod_handler)
     app.router.add_post("/api/instances/{id}/mods/upload", upload_mod)

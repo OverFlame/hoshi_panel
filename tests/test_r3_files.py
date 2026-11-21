@@ -273,3 +273,49 @@ async def test_export_cancel(tmp_path):
         assert done["cancelled"] is True or done["error"] == "已取消"
         download = await client.get(f"/api/jobs/{job['id']}/download")
         assert download.status == 404
+
+
+async def test_import_options_gate_remote(tmp_path):
+    app, config, instance, _ = make_app(tmp_path)
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        opts = await client.get("/api/packs/import-options")
+        body = await opts.json()
+        assert body["adopt"]["enabled"] is True
+        assert body["remote"]["enabled"] is False
+        assert "未开放公网" in body["remote"]["reason"]
+
+        blocked = await client.post(
+            "/api/packs/import-url",
+            json={"url": "https://example.com/pack.zip", "name": "x"},
+            headers=headers(csrf),
+        )
+        assert blocked.status == 403
+
+        config.set("web.exposure", "public")
+        config.set("auth.totp_enabled", True)
+        resp2 = await client.get("/api/packs/import-options")
+        opts2 = await resp2.json()
+        assert opts2["remote"]["enabled"] is True
+
+
+async def test_adopt_existing_directory(tmp_path):
+    app, _, instance, root = make_app(tmp_path)
+    extra = tmp_path / "another-server"
+    (extra / "world").mkdir(parents=True)
+    (extra / "server.jar").write_bytes(b"")
+    manifest = "Manifest-Version: 1.0\nMain-Class: net.minecraft.server.Main\n"
+    (extra / "server.jar").write_bytes(make_zip({"META-INF/MANIFEST.MF": manifest.encode()}))
+    (extra / "eula.txt").write_text("eula=true", encoding="utf-8")
+    (extra / "server.properties").write_text("level-name=world", encoding="utf-8")
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        resp = await client.post(
+            "/api/packs/adopt",
+            json={"directory": str(extra), "name": "接管测试"},
+            headers=headers(csrf),
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["instance"]["name"] == "接管测试"
+        assert body["instance"]["launch_mode"] == "jar"

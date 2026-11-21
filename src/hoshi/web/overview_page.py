@@ -82,6 +82,26 @@ body{font-size:.85rem}
     </div>
   </div>
 </main>
+<div id="import-modal" style="position:fixed;inset:8% 12%;background:#12161d;border:1px solid #262d38;border-radius:12px;display:none;flex-direction:column;z-index:50;padding:16px 18px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <b>导入整合包</b><button id="import-close" class="btn btn-sm">关闭</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px">
+    <div class="card"><div class="k">已有文件夹</div>
+      <div class="s">服务器上已经存在的服务端目录，接管它，不复制文件</div>
+      <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-dir">选择目录</button></div></div>
+    <div class="card"><div class="k">本地 zip</div>
+      <div class="s">从这台电脑上传一个 zip 整合包</div>
+      <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-zip">选择文件</button></div></div>
+    <div class="card" id="remote-card"><div class="k">远程 zip</div>
+      <div class="s">给服务器一个下载地址，由服务器自己去下</div>
+      <div id="remote-note" style="margin-top:8px;font-size:.78rem;color:#ff8a8a"></div>
+      <div style="margin-top:8px;display:flex;gap:6px"><input id="remote-url" placeholder="https://example.com/pack.zip" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6">
+      <button class="btn btn-sm btn-primary" id="remote-go">导入</button></div>
+      <details id="remote-help" style="margin-top:8px;font-size:.76rem;color:#8a93a3"><summary>怎么开放？有什么风险？</summary><div id="remote-help-body" style="margin-top:6px"></div></details>
+    </div>
+  </div>
+</div>
 <script>
 const $=id=>document.getElementById(id);
 const csrf=document.cookie.split('; ').find(c=>c.startsWith('hoshi_csrf='))?.split('=')[1]||'';
@@ -177,30 +197,80 @@ async function pollJob(id, onDone){
     await new Promise(r=>setTimeout(r,400));
   }
 }
-$('import-pack').onclick=()=>{
-  const input=document.createElement('input'); input.type='file'; input.accept='.zip';
-  input.onchange=async()=>{
-    const file=input.files[0]; if(!file)return;
-    const name=prompt('新实例名（目录名）', file.name.replace(/\.zip$/i,''));
-    if(!name)return;
-    const form=new FormData(); form.append('name',name); form.append('file',file);
-    showProgress('上传中 0%',0,false);
-    const xhr=new XMLHttpRequest(); xhr.open('POST','/api/packs/import');
-    xhr.setRequestHeader('X-CSRF-Token',csrf);
-    xhr.upload.onprogress=e=>{ if(e.lengthComputable) showProgress(`上传中 ${Math.round(e.loaded*100/e.total)}%`, e.loaded*100/e.total, false) };
-    xhr.onload=async()=>{
-      let d={}; try{ d=JSON.parse(xhr.responseText) }catch(_){}
-      if(xhr.status!==200){ hideProgress(); toast(d.error||('导入失败 '+xhr.status),'error'); return }
-      if(d.job&&d.job.id) await pollJob(d.job.id, ()=>{});
-      else hideProgress();
-      toast('已导入：'+d.instance.name+(d.skipped&&d.skipped.length?('，跳过 '+d.skipped.length+' 项'):''),'ok');
-      refreshAll();
-    };
-    xhr.onerror=()=>{ hideProgress(); toast('上传失败','error') };
-    xhr.send(form);
-  };
-  input.click();
+let importOptions=null;
+async function openImport(){
+  $('import-modal').style.display='flex';
+  if(!importOptions){
+    const r=await fetch('/api/packs/import-options'); if(r.ok) importOptions=await r.json();
+  }
+  const remote=(importOptions&&importOptions.remote)||{enabled:false};
+  $('remote-note').textContent=remote.enabled?'':(remote.reason||'');
+  $('remote-url').disabled=!remote.enabled;
+  $('remote-go').disabled=!remote.enabled;
+  if(!remote.enabled){
+    $('remote-url').style.opacity='.45'; $('remote-go').style.opacity='.45';
+    $('remote-go').classList.add('disabled');
+  }
+  $('remote-help-body').innerHTML='<p><b>开放方式：</b>'+(remote.how||'')+'</p><p style="color:#ffb4b4"><b>风险：</b>'+(remote.risk||'')+'</p>';
+  $('remote-help').style.display=remote.enabled?'none':'';
+}
+$('import-close').onclick=()=>{ $('import-modal').style.display='none' };
+
+$('pick-dir').onclick=async()=>{
+  const dir=await pickDirectory();
+  if(!dir)return;
+  const name=prompt('实例名', dir.split(/[\\/]/).filter(Boolean).pop()||'新实例');
+  if(!name)return;
+  showProgress('注册中…',60,false);
+  const r=await fetch('/api/packs/adopt',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({directory:dir,name})});
+  const d=await r.json(); hideProgress();
+  if(!r.ok){ toast(d.error||'注册失败','error'); return }
+  toast('已接管：'+d.instance.name+'（'+d.detected+'）','ok');
+  $('import-modal').style.display='none'; refreshAll();
 };
+
+async function pickDirectory(){
+  return await new Promise(resolve=>{
+    const box=document.createElement('div');
+    box.style.cssText='position:fixed;inset:12% 22%;background:#12161d;border:1px solid #262d38;border-radius:12px;z-index:60;display:flex;flex-direction:column;padding:14px';
+    box.innerHTML='<div style="display:flex;justify-content:space-between"><b>选择服务器上的目录</b><span class="muted" id="pd-cwd"></span></div>'
+      +'<div id="pd-list" style="flex:1;overflow:auto;margin-top:10px"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn btn-sm" data-x="cancel">取消</button><button class="btn btn-sm btn-primary" data-x="ok">选这个目录</button></div>';
+    document.body.appendChild(box);
+    let cur='';
+    async function load(path){
+      const r=await fetch('/api/fs/list?path='+encodeURIComponent(path||'')); const d=await r.json();
+      if(!r.ok)return; cur=d.path||''; box.querySelector('#pd-cwd').textContent=cur||'（盘符）';
+      const list=box.querySelector('#pd-list'); list.innerHTML='';
+      for(const e of d.entries){
+        const row=document.createElement('div'); row.textContent=e.name+(e.type==='dir'?'/':'');
+        row.style.cssText='padding:6px;border-bottom:1px solid #1c222c;cursor:pointer';
+        row.onclick=()=>{ if(e.type==='file')return; load(e.path) };
+        list.appendChild(row);
+      }
+    }
+    box.querySelector('[data-x=cancel]').onclick=()=>{ box.remove(); resolve(null) };
+    box.querySelector('[data-x=ok]').onclick=()=>{ const v=cur; box.remove(); resolve(v) };
+    load('');
+  });
+}
+
+$('remote-go').onclick=async()=>{
+  const url=$('remote-url').value.trim(); if(!url)return;
+  const name=prompt('实例名', (url.split('/').pop()||'remote-pack').replace(/\.zip$/i,''));
+  if(!name)return;
+  const r=await fetch('/api/packs/import-url',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({url,name})});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'导入失败','error'); return }
+  toast('开始下载，可取消','info');
+  await pollJob(d.job.id, job=>{
+    if(job.error){ toast(job.error,'error'); return }
+    toast('已导入：'+job.result.instance.name,'ok'); $('import-modal').style.display='none'; refreshAll();
+  });
+};
+
+$('import-pack').onclick=()=>{ openImport(); };
+
 $('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:H});location.href='/login'};
 refreshAll(); setInterval(refreshAll,5000);
 
