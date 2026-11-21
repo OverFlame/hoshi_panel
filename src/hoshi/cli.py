@@ -156,7 +156,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
     bind = str(config.get("web.bind"))
     port = int(config.get("web.port"))
     print(f"监听 http://{bind}:{port}")
-    web.run_app(app, host=bind, port=port, print=None)
+
+    try:
+        web.run_app(app, host=bind, port=port, print=None)
+    except OSError as exc:
+        busy = getattr(exc, "errno", None) in (98, 10048)
+        if busy and _health_ok(bind, port):
+            print(f"端口 {port} 上已经有一个面板在运行，不再重复启动。")
+            import webbrowser
+
+            webbrowser.open(f"http://127.0.0.1:{port}")
+            _pause_if_frozen()
+            return 0
+        if busy:
+            print(f"启动失败：端口 {port} 被别的程序占用。改端口：hoshi.exe serve --port 25580")
+        else:
+            print(f"启动失败：{exc}")
+        _pause_if_frozen()
+        return 1
     return 0
 
 
@@ -338,12 +355,42 @@ def cmd_java(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pause_if_frozen() -> None:
+    """双击运行时窗口会一闪而过，出错或提示后停一下。"""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        input("按回车退出…")
+    except EOFError:
+        pass
+
+
+def _app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
+def _health_ok(bind: str, port: int) -> bool:
+    """检查端口上是不是已经有一个本面板在跑。"""
+    import json
+    import urllib.request
+
+    host = "127.0.0.1" if bind in ("0.0.0.0", "::", "") else bind
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=2) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload.get("app") == APP_NAME
+    except Exception:
+        return False
+
+
 def _write_crash_log(exc: BaseException) -> Path | None:
     """冻结版双击运行时窗口会一闪而过，把堆栈落到 data/crash.log。"""
     import traceback
 
     try:
-        data_dir = Path("./data")
+        data_dir = _app_dir() / "data"
         for index, item in enumerate(sys.argv):
             if item == "--data-dir" and index + 1 < len(sys.argv):
                 data_dir = Path(sys.argv[index + 1])
@@ -370,11 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"启动失败：{exc}")
         if path is not None:
             print(f"详细堆栈已写入 {path}")
-        if getattr(sys, "frozen", False):
-            try:
-                input("按回车退出…")
-            except EOFError:
-                pass
+        _pause_if_frozen()
         return 1
 
 
