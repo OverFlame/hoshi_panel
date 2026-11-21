@@ -338,7 +338,47 @@ def cmd_java(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_crash_log(exc: BaseException) -> Path | None:
+    """冻结版双击运行时窗口会一闪而过，把堆栈落到 data/crash.log。"""
+    import traceback
+
+    try:
+        data_dir = Path("./data")
+        for index, item in enumerate(sys.argv):
+            if item == "--data-dir" and index + 1 < len(sys.argv):
+                data_dir = Path(sys.argv[index + 1])
+        data_dir.mkdir(parents=True, exist_ok=True)
+        path = data_dir / "crash.log"
+        path.write_text(
+            f"{APP_NAME} {VERSION}\n\n{traceback.format_exc()}", encoding="utf-8"
+        )
+        return path
+    except OSError:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except SystemExit:
+        raise
+    except BaseException as exc:  # 未捕获异常：写日志，冻结版还要停住窗口
+        import traceback
+
+        traceback.print_exc()
+        path = _write_crash_log(exc)
+        print(f"启动失败：{exc}")
+        if path is not None:
+            print(f"详细堆栈已写入 {path}")
+        if getattr(sys, "frozen", False):
+            try:
+                input("按回车退出…")
+            except EOFError:
+                pass
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     raw = list(argv if argv is not None else sys.argv[1:])
     if raw and raw[0] in ("-h", "--help"):
         build_parser().print_help()
