@@ -319,3 +319,35 @@ async def test_adopt_existing_directory(tmp_path):
         body = await resp.json()
         assert body["instance"]["name"] == "接管测试"
         assert body["instance"]["launch_mode"] == "jar"
+
+
+async def test_import_zip_on_server_disk(tmp_path):
+    app, config, instance, _ = make_app(tmp_path)
+    servers = Path(config.get("app.servers_dir"))
+    source = tmp_path / "local-pack.zip"
+    source.write_bytes(pack_bytes())
+    async with TestClient(TestServer(app)) as client:
+        csrf = await login(client)
+        resp = await client.post(
+            "/api/packs/import-path",
+            json={"path": str(source), "name": "磁盘导入"},
+            headers=headers(csrf),
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert body["instance"]["name"] == "磁盘导入"
+        assert (servers / "磁盘导入" / "server.jar").exists()
+
+        again = await client.post(
+            "/api/packs/import-path",
+            json={"path": str(source), "name": "磁盘导入"},
+            headers=headers(csrf),
+        )
+        assert again.status == 409
+
+        missing = await client.post(
+            "/api/packs/import-path",
+            json={"path": str(tmp_path / "nope.zip"), "name": "x"},
+            headers=headers(csrf),
+        )
+        assert missing.status == 400

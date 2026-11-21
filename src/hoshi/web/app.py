@@ -2066,6 +2066,7 @@ def create_app(
             {
                 "adopt": {"enabled": True, "summary": "直接接管服务器上已有的服务端目录，不复制文件"},
                 "zip": {"enabled": True, "summary": "上传本机的 zip 整合包"},
+                "path": {"enabled": True, "summary": "服务器磁盘上已有的 zip 文件，就地解压"},
                 "remote": remote_import_state(),
             }
         )
@@ -2109,6 +2110,70 @@ def create_app(
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         audit(request[SESSION_KEY].username, "pack.adopt", target=instance.id, result="ok", detail=name)
         return web.json_response({"ok": True, "instance": instance.to_dict(), "detected": detected.summary()})
+
+    async def import_path(request: web.Request) -> web.Response:
+        """服务器磁盘上已有的 zip，就地解压导入。"""
+        payload = await _read_payload(request)
+        raw = str(payload.get("path", "")).strip()
+        if not raw:
+            return web.json_response({"ok": False, "error": "缺少 zip 路径"}, status=400)
+        source = Path(raw).expanduser()
+        if not source.is_file() or source.suffix.lower() != ".zip":
+            return web.json_response({"ok": False, "error": "不是一个 zip 文件"}, status=400)
+        name = str(payload.get("name", "")).strip() or source.stem
+        servers_dir = Path(str(config.get("app.servers_dir"))).expanduser().resolve()
+        target = servers_dir / name
+        if target.exists():
+            return web.json_response({"ok": False, "error": "目标目录已存在"}, status=409)
+
+        job = jobs.create("path-import", total=1)
+        jobs.update(job["id"], phase="解压中")
+        target.mkdir(parents=True, exist_ok=True)
+
+        def work() -> list[str]:
+            return safe_extract(
+                source,
+                target,
+                progress=lambda done, total: jobs.update(
+                    job["id"], done=done, total=total, phase="解压中"
+                ),
+            )
+
+        try:
+            skipped = await asyncio.get_running_loop().run_in_executor(None, work)
+        except Exception as exc:
+            jobs.finish(job["id"], error=str(exc))
+            return web.json_response({"ok": False, "error": f"解压失败：{exc}"}, status=500)
+        jobs.update(job["id"], phase="识别中")
+        detected = detect(target)
+        if not detected.ok:
+            jobs.finish(job["id"], error="识别失败，需要手动添加实例")
+            return web.json_response(
+                {"ok": False, "error": "识别失败，需要手动添加实例", "path": str(target)}, status=422
+            )
+        found = await asyncio.get_running_loop().run_in_executor(None, scan)
+        chosen = pick_for(detected.mc_version or "1.20.1", found) or (found[0] if found else None)
+        try:
+            instance = Instance.new(
+                name=name,
+                directory=str(target),
+                launch_mode=detected.launch_mode,
+                jar=detected.jar,
+                args_file=detected.args_file,
+                user_jvm_args=detected.user_jvm_args,
+                java=chosen.path if chosen else "",
+                min_memory_mb=2048,
+                max_memory_mb=8192,
+            )
+            registry.add(instance)
+        except InstanceError as exc:
+            jobs.finish(job["id"], error=str(exc))
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        jobs.finish(job["id"], result={"instance": instance.to_dict(), "skipped": skipped})
+        audit(request[SESSION_KEY].username, "pack.import_path", target=instance.id, result="ok", detail=str(source)[:120])
+        return web.json_response(
+            {"ok": True, "job": jobs.get(job["id"]), "instance": instance.to_dict(), "skipped": skipped}
+        )
 
     async def import_url(request: web.Request) -> web.Response:
         state = remote_import_state()
@@ -2391,6 +2456,7 @@ def create_app(
     app.router.add_get("/api/packs/import-options", pack_options)
     app.router.add_post("/api/packs/adopt", adopt_pack)
     app.router.add_post("/api/packs/import-url", import_url)
+    app.router.add_post("/api/packs/import-path", import_path)
     app.router.add_get("/api/instances/{id}/mods", list_mods)
     app.router.add_post("/api/instances/{id}/mods/toggle", toggle_mod_handler)
     app.router.add_post("/api/instances/{id}/mods/upload", upload_mod)

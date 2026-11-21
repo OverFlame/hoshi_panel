@@ -86,10 +86,13 @@ body{font-size:.85rem}
   <div style="display:flex;justify-content:space-between;align-items:center">
     <b>导入整合包</b><button id="import-close" class="btn btn-sm">关闭</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px">
+  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px">
     <div class="card"><div class="k">已有文件夹</div>
       <div class="s">服务器上已经存在的服务端目录，接管它，不复制文件</div>
       <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-dir">选择目录</button></div></div>
+    <div class="card"><div class="k">服务器上的 zip</div>
+      <div class="s">服务器磁盘里已经存在的 zip，就地解压，不再上传</div>
+      <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-file">选择 zip 文件</button></div></div>
     <div class="card"><div class="k">本地 zip</div>
       <div class="s">从这台电脑上传一个 zip 整合包</div>
       <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-zip">选择文件</button></div></div>
@@ -229,6 +232,32 @@ $('pick-dir').onclick=async()=>{
   $('import-modal').style.display='none'; refreshAll();
 };
 
+async function pickFile(){
+  return await new Promise(resolve=>{
+    const box=document.createElement('div');
+    box.style.cssText='position:fixed;inset:12% 22%;background:#12161d;border:1px solid #262d38;border-radius:12px;z-index:60;display:flex;flex-direction:column;padding:14px';
+    box.innerHTML='<div style="display:flex;justify-content:space-between"><b>选择服务器上的 zip</b><span class="muted" id="pf-cwd"></span></div>'
+      +'<div id="pf-list" style="flex:1;overflow:auto;margin-top:10px"></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn btn-sm" data-x="cancel">取消</button></div>';
+    document.body.appendChild(box);
+    let cur='';
+    async function load(path){
+      const r=await fetch('/api/fs/list?path='+encodeURIComponent(path||'')+'&files=1&suffix=.zip');
+      const d=await r.json(); if(!r.ok)return;
+      cur=d.path||''; box.querySelector('#pf-cwd').textContent=cur||'（盘符）';
+      const list=box.querySelector('#pf-list'); list.innerHTML='';
+      for(const e of d.entries){
+        const row=document.createElement('div'); row.textContent=e.name+(e.type==='dir'?'/':'');
+        row.style.cssText='padding:6px;border-bottom:1px solid #1c222c;cursor:pointer;'+(e.type==='file'?'color:#8ff0c0':'');
+        row.onclick=()=>{ if(e.type==='file'){ box.remove(); resolve(e.path) } else load(e.path) };
+        list.appendChild(row);
+      }
+    }
+    box.querySelector('[data-x=cancel]').onclick=()=>{ box.remove(); resolve(null) };
+    load('');
+  });
+}
+
 async function pickDirectory(){
   return await new Promise(resolve=>{
     const box=document.createElement('div');
@@ -254,6 +283,18 @@ async function pickDirectory(){
     load('');
   });
 }
+
+$('pick-file').onclick=async()=>{
+  const path=await pickFile(); if(!path)return;
+  const name=prompt('实例名', (path.split(/[\\/]/).pop()||'pack').replace(/\.zip$/i,''));
+  if(!name)return;
+  showProgress('解压中…',30,false);
+  const r=await fetch('/api/packs/import-path',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({path,name})});
+  const d=await r.json(); hideProgress();
+  if(!r.ok){ toast(d.error||'导入失败','error'); return }
+  toast('已导入：'+d.instance.name+(d.skipped&&d.skipped.length?('，跳过 '+d.skipped.length+' 项'):''),'ok');
+  $('import-modal').style.display='none'; refreshAll();
+};
 
 $('remote-go').onclick=async()=>{
   const url=$('remote-url').value.trim(); if(!url)return;
