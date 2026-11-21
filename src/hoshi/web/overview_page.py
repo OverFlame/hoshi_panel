@@ -37,6 +37,7 @@ OVERVIEW_HTML = r"""<!doctype html>
  .ev{font-size:.8rem;color:#a9b3c2;padding:5px 0;border-bottom:1px solid #1a2029}
  .ev b{color:#dfe5ee;font-weight:500}
  .muted{color:#7d8695}
+ .hint{font-size:.74rem;color:#8a93a3;margin-top:6px;line-height:1.5}
  .empty{color:#7d8695;font-size:.85rem;padding:18px 0}
  @media (max-width:900px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} .cols{grid-template-columns:1fr} }
 </style><style>
@@ -87,17 +88,21 @@ body{font-size:.85rem}
     <b>导入整合包</b><button id="import-close" class="btn btn-sm">关闭</button>
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px">
-    <div class="card"><div class="k">已有文件夹</div>
-      <div class="s">服务器上已经存在的服务端目录，接管它，不复制文件</div>
+    <div class="card"><div class="k">服务器上的文件夹</div>
+      <div class="s">直接接管服务器上已有的服务端目录，文件原地不动</div>
+      <div class="hint" data-hint="adopt"></div>
       <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-dir">选择目录</button></div></div>
     <div class="card"><div class="k">服务器上的 zip</div>
-      <div class="s">服务器磁盘里已经存在的 zip，就地解压，不再上传</div>
+      <div class="s">服务器磁盘里已有的 zip，就地解压，不上传</div>
+      <div class="hint" data-hint="path"></div>
       <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-file">选择 zip 文件</button></div></div>
-    <div class="card"><div class="k">本地 zip</div>
-      <div class="s">从这台电脑上传一个 zip 整合包</div>
+    <div class="card"><div class="k">从我的电脑上传</div>
+      <div class="s">把你这台电脑上的 zip 传到服务器</div>
+      <div class="hint" data-hint="zip"></div>
       <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="pick-zip">选择文件</button></div></div>
-    <div class="card" id="remote-card"><div class="k">远程 zip</div>
-      <div class="s">给服务器一个下载地址，由服务器自己去下</div>
+    <div class="card" id="remote-card"><div class="k">服务器从网址下载</div>
+      <div class="s">你给一个 http(s) 地址，服务器自己去下</div>
+      <div class="hint" data-hint="remote"></div>
       <div id="remote-note" style="margin-top:8px;font-size:.78rem;color:#ff8a8a"></div>
       <div style="margin-top:8px;display:flex;gap:6px"><input id="remote-url" placeholder="https://example.com/pack.zip" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid #2a3140;background:#0b0e13;color:#e6e6e6">
       <button class="btn btn-sm btn-primary" id="remote-go">导入</button></div>
@@ -207,7 +212,10 @@ async function openImport(){
     const r=await fetch('/api/packs/import-options'); if(r.ok) importOptions=await r.json();
   }
   const remote=(importOptions&&importOptions.remote)||{enabled:false};
-  $('remote-note').textContent=remote.enabled?'':(remote.reason||'');
+  const hints={adopt:(importOptions&&importOptions.adopt||{}).hint, zip:(importOptions&&importOptions.zip||{}).hint,
+    path:(importOptions&&importOptions.path||{}).hint, remote:remote.hint};
+  document.querySelectorAll('.hint[data-hint]').forEach(el=>{ el.textContent=hints[el.dataset.hint]||'' });
+  $('remote-note').textContent=remote.enabled?'':(remote.reason||'未允许服务器从网址下载');
   $('remote-url').disabled=!remote.enabled;
   $('remote-go').disabled=!remote.enabled;
   if(!remote.enabled){

@@ -440,6 +440,18 @@ SCHEMA: tuple[Item, ...] = (
     ),
     # ---------------- 文件 ----------------
     Item(
+        key="files.allow_remote_download",
+        kind="bool",
+        default=False,
+        label="允许服务器从网址下载 zip",
+        summary="导入整合包时，让服务器替你下载一个 http(s) 地址",
+        why="关掉时导入只能用服务器上的文件或从浏览器上传。"
+        "开启后服务器会主动访问你填的地址，等于把出站请求交给你，公网暴露与否无关，"
+        "请只在下你能信任该地址时使用。",
+        group="文件与备份",
+        risk="medium",
+    ),
+    Item(
         key="files.max_upload_mb",
         kind="int",
         default=4096,

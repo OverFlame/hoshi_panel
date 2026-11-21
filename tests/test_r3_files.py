@@ -283,7 +283,8 @@ async def test_import_options_gate_remote(tmp_path):
         body = await opts.json()
         assert body["adopt"]["enabled"] is True
         assert body["remote"]["enabled"] is False
-        assert "未开放公网" in body["remote"]["reason"]
+        assert "未允许服务器从网址下载" in body["remote"]["reason"]
+        assert body["zip"]["hint"] and body["adopt"]["hint"] and body["path"]["hint"]
 
         blocked = await client.post(
             "/api/packs/import-url",
@@ -292,8 +293,7 @@ async def test_import_options_gate_remote(tmp_path):
         )
         assert blocked.status == 403
 
-        config.set("web.exposure", "public")
-        config.set("auth.totp_enabled", True)
+        config.set("files.allow_remote_download", True)
         resp2 = await client.get("/api/packs/import-options")
         opts2 = await resp2.json()
         assert opts2["remote"]["enabled"] is True

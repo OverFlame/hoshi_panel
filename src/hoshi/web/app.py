@@ -2052,21 +2052,35 @@ def create_app(
     # ---------- 导入整合包：三种方式 ----------
 
     def remote_import_state() -> dict[str, object]:
-        public = str(config.get("web.exposure")) == "public" and bool(config.get("auth.totp_enabled"))
+        allowed = bool(config.get("files.allow_remote_download"))
         return {
-            "enabled": public,
-            "reason": "" if public else "未开放公网不可使用",
-            "how": "设置里把「公网暴露」改为 public，填写确认短语，并开启两步验证，然后重启面板。",
-            "risk": "开放公网意味着面板登录页对整个互联网可见。远程导入会由服务器代替你去下载任意地址的文件，"
-                    "请只在你能控制访问范围时使用，并确保密码足够强、已开两步验证。",
+            "enabled": allowed,
+            "reason": "" if allowed else "未允许服务器从网址下载",
+            "how": "设置页 →「允许服务器从网址下载 zip」打开，保存后重试。不需要开放公网。",
+            "risk": "开启后服务器会按你填的地址主动发起下载，地址由你决定，"
+                    "只要确保它指向可信来源（自己的对象存储或官方发布页），不要粘来路不明的链接。",
+            "hint": "服务器自己去下载这个地址，下载完就解压。要求该地址是直链，且服务器能上网。",
         }
 
     async def pack_options(_: web.Request) -> web.Response:
         return web.json_response(
             {
-                "adopt": {"enabled": True, "summary": "直接接管服务器上已有的服务端目录，不复制文件"},
-                "zip": {"enabled": True, "summary": "上传本机的 zip 整合包"},
-                "path": {"enabled": True, "summary": "服务器磁盘上已有的 zip 文件，就地解压"},
+                "adopt": {
+                    "enabled": True,
+                    "summary": "直接接管服务器上已有的服务端目录，不复制文件",
+                    "hint": "只登记目录位置，文件原地不动。选完填个名字即可。",
+                },
+                "zip": {
+                    "enabled": True,
+                    "summary": "把你这台电脑上的 zip 传到服务器",
+                    "hint": "文件经浏览器上传到面板，再解压到服务器。占用你的上行带宽，"
+                            "面板只在本机时请用 SSH 隧道访问。",
+                },
+                "path": {
+                    "enabled": True,
+                    "summary": "服务器磁盘上已有的 zip 文件，就地解压",
+                    "hint": "不上传任何数据，只把服务器上的 zip 解开。适合先用 scp 传包的情况。",
+                },
                 "remote": remote_import_state(),
             }
         )
